@@ -16,10 +16,11 @@ export CLUSTER_NAME=DEV
 # Env Definition
 export PROM_VALUES=prometheus.values.yaml
 export PROM_POD_HELPER=prom-migrate-helper
-
-export POD_MANIFEST="pod-helper.manifest.yaml"
 export THANOS_CONF_FILE="thanos-storage-config.yaml"
 export THANOS_VALUES="thanos.values.yaml"
+
+export POD_MANIFEST="pod-helper.manifest.yaml"
+export POD_CMD="pod-helper.install.sh"
 
 ## !!! Fill this !!!
 export ACCOUNT_ID="<ACCOUNT_ID>"
@@ -123,10 +124,9 @@ spec:
         claimName: $PROM_PVC
   containers:
   - name: $PROM_POD_HELPER
-    image: arfanpantua/monitoring-installer:1.0
+    image: ubuntu:16.04
     imagePullPolicy: IfNotPresent
-    command: ["/bin/sh"]
-    args: ["-c", "while true;do cd /home; curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip;unzip awscliv2.zip; ./aws/install; sleep 24h;done"] 
+    command: ["/bin/sleep", "3650d"]
     volumeMounts:
       - mountPath: "/tmp/data"
         name: pv-storage
@@ -136,8 +136,29 @@ kubectl apply -f $POD_MANIFEST
 echo "-- Waiting to available..."
 kubectl wait pods -l app=$PROM_POD_HELPER --for condition=Ready --timeout=100s
 sleep 30s
-echo "-- Migration data to s3..."
-kubectl exec po/$PROM_POD_HELPER -- /bin/bash -c "aws s3 cp /tmp/data s3://$BUCKET_NAME --recursive"
+
+# Prepare the initial commands
+cat << EOF > $POD_CMD
+#!/bin/bash
+set -x
+apt update -y && apt -y upgrade
+
+apt install curl zip -y
+
+cd /home
+curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
+
+unzip awscliv2.zip
+
+./aws/install
+
+aws s3 cp /tmp/data s3://$BUCKET_NAME --recursive
+EOF
+
+echo "-- Transfer processing ... --"
+kubectl cp $POD_CMD $PROM_POD_HELPER:/tmp/data/
+kubectl exec po/$PROM_POD_HELPER -- /bin/bash -c "chmod +x /tmp/data/$POD_CMD"
+kubectl exec po/$PROM_POD_HELPER -- /bin/bash -c "bash /tmp/data/$POD_CMD"
 echo "-- Data is copied to S3!"
 # Release helper pod
 echo "-- Release the POD Helper"
