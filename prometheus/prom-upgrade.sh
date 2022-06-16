@@ -6,6 +6,8 @@ set -e -x
 #!!! Replace the values !!!
 export PROM_NAMESPACE=prometheus # or 'default'
 export PROM_RELEASE_NAME=prometheus
+export THANOS_CONF_FILE="thanos-storage-config.yaml"
+export THANOS_VALUES="thanos.values.yaml"
 
 # Set to the specific version
 export PROM_VERSION=15.0.4
@@ -16,8 +18,6 @@ export CLUSTER_NAME=DEV
 # Env Definition
 export PROM_VALUES=prometheus.values.yaml
 export PROM_POD_HELPER=prom-migrate-helper
-export THANOS_CONF_FILE="thanos-storage-config.yaml"
-export THANOS_VALUES="thanos.values.yaml"
 
 export POD_MANIFEST="pod-helper.manifest.yaml"
 export POD_CMD="pod-helper.install.sh"
