@@ -4,6 +4,13 @@ set -e -x
 
 #-------------------------------------------------------------------------------------
 #!!! Replace the values !!!
+export ACCOUNT_ID="<ACCOUNT_ID>"
+export OIDC_PROVIDER="<OIDC_PROVIDER>"
+export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>" #by default it was prometheus-server dont use this name
+export ROLE_NAME="<ROLE_NAME>"
+export BUCKET_NAME="<BUCKET_NAME>"
+export POLICY_NAME="<POLICY_NAME>"
+
 export LOKI_NAMESPACE=loki # or 'default'
 export LOKI_RELEASE_NAME=loki
 export STORAGE_CLASS_NAME=...
@@ -20,14 +27,6 @@ export LOKI_POD_HELPER=loki-migrate-helper
 export POD_MANIFEST="pod-helper.manifest.yaml"
 export PYTHON_SCRIPT="script.py"
 export POD_CMD="pod-helper.install.sh"
-
-## !!! Fill this !!!
-export ACCOUNT_ID="<ACCOUNT_ID>"
-export OIDC_PROVIDER="<OIDC_PROVIDER>"
-export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>" #by default it was prometheus-server dont use this name
-export ROLE_NAME="<ROLE_NAME>"
-export BUCKET_NAME="<BUCKET_NAME>"
-export POLICY_NAME="<POLICY_NAME>"
 
 # Set namespace
 echo "-- Set the kubectl context to use the LOKI_NAMESPACE: $LOKI_NAMESPACE"

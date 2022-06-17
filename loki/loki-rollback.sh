@@ -9,7 +9,7 @@ export LOKI_RELEASE_NAME=loki
 
 # Set to the specific version
 export LOKI_VERSION=2.6.0
-
+#-------------------------------------------------------------------------------------
 # Env Definition
 export LOKI_VALUES=loki.values.yaml.bak
 
