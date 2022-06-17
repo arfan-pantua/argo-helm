@@ -4,19 +4,21 @@ set -e -x
 
 #-------------------------------------------------------------------------------------
 #!!! Replace the values !!!
+export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>"
+export BUCKET_NAME="<BUCKET_NAME>"
+
 export PROM_NAMESPACE=prometheus # or 'default'
 export PROM_RELEASE_NAME=prometheus
 
 # Set to the specific version
 export PROM_VERSION=13.0.0
-
+#-------------------------------------------------------------------------------------
 # Env Definition
 export PROM_VALUES=prom.values.yaml
 export PROM_POD_HELPER=prom-migrate-helper
 export POD_MANIFEST="pod-helper.manifest.yaml"
-export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>"
 export PROM_PVC="prometheus-server"
-export BUCKET_NAME="<BUCKET_NAME>"
+
 
 # Set namespace
 echo "-- Set the kubectl context to use the PROM_NAMESPACE: $PROM_NAMESPACE"

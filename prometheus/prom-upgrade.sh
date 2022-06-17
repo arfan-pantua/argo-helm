@@ -4,6 +4,13 @@ set -e -x
 
 #-------------------------------------------------------------------------------------
 #!!! Replace the values !!!
+export ACCOUNT_ID="<ACCOUNT_ID>"
+export OIDC_PROVIDER="<OIDC_PROVIDER>"
+export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>" #by default it was prometheus-server dont use this name
+export ROLE_NAME="<ROLE_NAME>"
+export BUCKET_NAME="<BUCKET_NAME>"
+export POLICY_NAME="<POLICY_NAME>"
+
 export PROM_NAMESPACE=prometheus # or 'default'
 export PROM_RELEASE_NAME=prometheus
 export THANOS_CONF_FILE="thanos-storage-config.yaml"
@@ -18,17 +25,11 @@ export CLUSTER_NAME=DEV
 # Env Definition
 export PROM_VALUES=prometheus.values.yaml
 export PROM_POD_HELPER=prom-migrate-helper
-
 export POD_MANIFEST="pod-helper.manifest.yaml"
 export POD_CMD="pod-helper.install.sh"
 
 ## !!! Fill this !!!
-export ACCOUNT_ID="<ACCOUNT_ID>"
-export OIDC_PROVIDER="<OIDC_PROVIDER>"
-export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>" #by default it was prometheus-server dont use this name
-export ROLE_NAME="<ROLE_NAME>"
-export BUCKET_NAME="<BUCKET_NAME>"
-export POLICY_NAME="<POLICY_NAME>"
+
 
 # Set namespace
 echo "-- Set the kubectl context to use the PROM_NAMESPACE: $PROM_NAMESPACE"
