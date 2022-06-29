@@ -25,6 +25,7 @@ export LOKI_VALUES=loki.values.yaml
 export LOKI_POD_HELPER=loki-0
 
 export PYTHON_SCRIPT="script.py"
+export PYTHON_SCRIPT_UPGRADE="script-upgrade.py"
 export CONTAINER_CMD="container-helper.install.sh"
 
 # Set namespace
@@ -105,19 +106,15 @@ cat << EOF >> $LOKI_VALUES
 extraContainers:
 ## Additional containers to be added to the loki pod.
 - name: helper
-  image: python:latest
+  image: arfanpantua/loki-patch-migration
   imagePullPolicy: IfNotPresent
   command: ["/bin/sleep", "3650d"]
   volumeMounts:
     - name: storage
       mountPath: /tmp/data
-securityContext:
-  runAsNonRoot: false
-  runAsUser: 0
 serviceAccount:
   create: false
-  name: loki-sa
-  annotations: {}
+  name: $SERVICE_ACCOUNT_NAME
 EOF
 
 echo "-- Upgrade the helm: $LOKI_VERSION"
@@ -130,19 +127,15 @@ cat << EOF > $PYTHON_SCRIPT
 #!/usr/bin/python3
 
 import binascii
+from calendar import week
 import sqlite3
 import datetime
-from datetime import datetime
-import time
-from multiprocessing import Pool
-import multiprocessing
 import time
 import glob 
 import boto3 
 import os 
-import sys 
+import logging 
 import base64
-import shutil
 from dateutil.relativedelta import relativedelta
 
 
@@ -156,36 +149,34 @@ s3 = boto3.resource('s3')
 filenames =  glob.glob(f"{DATA_FILES_LOCATION}/*", recursive=True)
 
 # Sort list of files based on last modification time in ascending order
-#filenames = sorted( filenames, key = os.path.getmtime)
+filenames = sorted( filenames, key = os.path.getmtime)
 first_file = min(filenames, key=os.path.getmtime)
-current_month_file = time.strftime("%B", time.gmtime(os.path.getmtime("{}".format(first_file))))
+current_week_file = time.strftime("%W", time.gmtime(os.path.getmtime("{}".format(first_file))))
 current_year_file = time.strftime("%Y", time.gmtime(os.path.getmtime("{}".format(first_file))))
 thisLatest = False
 def isNotLatest():
     global thisLatest
     latest_file = max(filenames, key=os.path.getmtime)
-    latest_month_file = get_month(latest_file)
+    latest_week_file = get_week(latest_file)
     latest_year_file = get_year(latest_file)
-    if latest_month_file == current_month_file and latest_year_file == current_year_file:
+    if latest_week_file == current_week_file and latest_year_file == current_year_file:
         thisLatest= True
     return True
 def nextPatch():
-    global current_month_file, current_year_file
-    datetime_str = f"{current_month_file} {current_year_file}"
-    datetime_object = datetime.strptime(datetime_str, '%B %Y')
-    next_month = datetime_object + relativedelta(months=1)
-    current_month_file = next_month.strftime("%B")
-    current_year_file = next_month.strftime("%Y")
-def get_month(file):
-    month = time.strftime("%B", time.gmtime(os.path.getmtime("{}".format(file))))
-    return month
+    global current_week_file, current_year_file
+    next_week = datetime.date(int(current_year_file), 1, 1) + relativedelta(weeks=+int(current_week_file)+1)
+    current_week_file = next_week.strftime("%W")
+    current_year_file = next_week.strftime("%Y")
+def get_week(file):
+    week = time.strftime("%W", time.gmtime(os.path.getmtime("{}".format(file))))
+    return week
 def get_year(file):
     year = time.strftime("%Y", time.gmtime(os.path.getmtime("{}".format(file))))
     return year
 
 def upload():    
-    data = filtering_data(filenames,current_month_file,current_year_file)
-    time_start = datetime.now()
+    data = filtering_data(filenames,current_week_file,current_year_file)
+    time_start = datetime.datetime.now()
     counter = 1
     for myfile in data:
         filename = os.path.basename(myfile)    
@@ -197,40 +188,41 @@ def upload():
                 src = f"{DATA_FILES_LOCATION}/{full_filename}"
                 dst = f"{b64_filename}"
                 s3.Bucket(BUCKET).upload_file(src, dst)
-                print("---")
-                print("Uploading...")
-                print(":: %s -> %s", (src, dst))
                 print(f" Data : {counter}")
                 counter = counter + 1
+                logging.basicConfig(filename="log-migration.txt", level=logging.DEBUG)
+                logging.info(f"Filename {full_filename} in month {current_week_file} and year {current_year_file}")
             except binascii.Error as e:
-                print(f'Filename {full_filename} in month {current_month_file} and year {current_year_file} cant be decoded!', str(e))
-    time_finish = datetime.now()
-    addData(time_start,time_finish,counter,f"Done data in {current_month_file} {current_year_file}")
+                logging.error(f"The program encountered an error", str(e))
+    print(f" Week : {current_week_file} Year : {current_year_file}")
+    time_finish = datetime.datetime.now()
+    addData(time_start,time_finish,counter,f"Done data in week {current_week_file} and year {current_year_file}")
 def addData(time_start,time_finish,total,status):
     try:
+        logging.basicConfig(filename="log-sqlite-migration.txt", level=logging.ERROR)
         sqliteConnection = sqlite3.connect('loki-migration.db')
         cursor = sqliteConnection.cursor()
         print("Connected to SQLite")
         duration = time_finish - time_start
         # Insert data
-        sqlite_insert_with_param = """INSERT INTO 'progres_data'(month,year,time_start,time_finish,duration,total,status) values (?,?,?,?,?,?);"""
-        data = (current_month_file,current_year_file,time_start,time_finish,duration.total_seconds(),total,status)
+        sqlite_insert_with_param = """INSERT INTO 'progres_data'(week,year,time_start,time_finish,duration,total,status) values (?,?,?,?,?,?,?);"""
+        data = (current_week_file,current_year_file,time_start,time_finish,duration.total_seconds(),total,status)
         cursor.execute(sqlite_insert_with_param, data)
         sqliteConnection.commit()
     except sqlite3.Error as error:
-        print("Error while working with SQLite", error)
+        logging.error(f"The program encountered an error", str(error))
     finally:
         if sqliteConnection:
             sqliteConnection.close()
             print("sqlite connection is closed")
-def filtering_data(data,current_patch_month, current_patch_year):
+def filtering_data(data,current_patch_week, current_patch_year):
     current_patch_files = []
     while len(current_patch_files)==0:
-        current_patch_files = [f for f in data if get_month(f) == current_patch_month and get_year(f) == current_patch_year]
+        current_patch_files = [f for f in data if get_week(f) == current_patch_week and get_year(f) == current_patch_year]
         if len(current_patch_files)!=0:
             break
         nextPatch()
-        current_patch_month = current_month_file
+        current_patch_week = current_week_file
         current_patch_year = current_year_file
     return current_patch_files
 
@@ -247,20 +239,7 @@ EOF
 
 # Prepare the initial commands
 cat << EOF > $CONTAINER_CMD
-set -x
-apt-get update
-apt-get install curl zip python3-pip sqlite3 -y
-pip install boto3
-pip install awscli
-pip install python-dateutil
-cd /home
-
-curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
-
-unzip awscliv2.zip
-
-./aws/install
-
+#!/bin/bash
 
 cd /tmp/data/loki
 aws s3api put-object --bucket $BUCKET_NAME --key index/
@@ -271,7 +250,7 @@ chmod +x /tmp/data/$PYTHON_SCRIPT
 
 # Create Database SQLite
 
-sqlite3 -line loki-migration.db 'create table progres_data (id INTEGER PRIMARY KEY AUTOINCREMENT,month TEXT NOT NULL,year TEXT NOT NULL, time_start timestamp, time_finish timestamp, duration integer,total integer, status TEXT)'
+sqlite3 -line loki-migration.db 'create table progres_data (id INTEGER PRIMARY KEY AUTOINCREMENT,week TEXT NOT NULL,year TEXT NOT NULL, time_start timestamp, time_finish timestamp, duration integer,total integer, status TEXT)'
 
 python /tmp/data/$PYTHON_SCRIPT
 EOF
