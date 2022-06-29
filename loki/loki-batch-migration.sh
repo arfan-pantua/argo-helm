@@ -22,10 +22,9 @@ export CLUSTER_NAME=DEMO
 
 # Env Definition
 export LOKI_VALUES=loki.values.yaml
-export LOKI_POD_HELPER=loki-0
+export LOKI_CONTAINER_HELPER=loki-0
 
 export PYTHON_SCRIPT="script.py"
-export PYTHON_SCRIPT_UPGRADE="script-upgrade.py"
 export CONTAINER_CMD="container-helper.install.sh"
 
 # Set namespace
@@ -237,6 +236,8 @@ if __name__ == "__main__":
     print(f"Done! Total time is {toc - tic} in seconds")
 EOF
 
+
+
 # Prepare the initial commands
 cat << EOF > $CONTAINER_CMD
 #!/bin/bash
@@ -256,8 +257,8 @@ python /tmp/data/$PYTHON_SCRIPT
 EOF
 
 echo "-- Transfer processing ... --"
-kubectl cp $PYTHON_SCRIPT $LOKI_POD_HELPER:/tmp/data/ -c helper
-kubectl cp $CONTAINER_CMD $LOKI_POD_HELPER:/tmp/data/ -c helper
-kubectl exec po/$LOKI_POD_HELPER -c helper -- /bin/bash -c "chmod +x /tmp/data/$CONTAINER_CMD"
-kubectl exec po/$LOKI_POD_HELPER -c helper -- /bin/bash -c "bash /tmp/data/$CONTAINER_CMD"
+kubectl cp $PYTHON_SCRIPT $LOKI_CONTAINER_HELPER:/tmp/data/ -c helper
+kubectl cp $CONTAINER_CMD $LOKI_CONTAINER_HELPER:/tmp/data/ -c helper
+kubectl exec po/$LOKI_CONTAINER_HELPER -c helper -- /bin/bash -c "chmod +x /tmp/data/$CONTAINER_CMD"
+kubectl exec po/$LOKI_CONTAINER_HELPER -c helper -- /bin/bash -c "bash /tmp/data/$CONTAINER_CMD"
 echo "-- Data is copied to S3!"
