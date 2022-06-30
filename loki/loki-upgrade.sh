@@ -43,7 +43,7 @@ from dateutil.relativedelta import relativedelta
 
 
 # target location of the files on S3  
-BUCKET = '<Bucket Name>'
+BUCKET = '$BUCKET_NAME'
 # Source location of files on local system 
 DATA_FILES_LOCATION   = "/tmp/data/loki/chunks"
 s3 = boto3.resource('s3')
@@ -151,7 +151,6 @@ aws s3 cp chunks/index s3://$BUCKET_NAME/index --recursive
 chmod +x /tmp/data/$PYTHON_SCRIPT
 
 python /tmp/data/$PYTHON_SCRIPT
-
 
 EOF
 

@@ -94,8 +94,8 @@ echo "-- Policy to access S3 bucket was attached to role $ROLE_NAME --"
 
 # Scale the loki to 0
 echo "-- Scale Loki's Deployment to 0"
-#kubectl scale statefulset/loki --replicas=0
-#sleep 10s
+kubectl scale statefulset/loki --replicas=0
+sleep 10s
 
 echo "-- Create container as sidecar of loki --"
 # Prepare sidecar
@@ -114,13 +114,16 @@ extraContainers:
 serviceAccount:
   create: false
   name: $SERVICE_ACCOUNT_NAME
+securityContext:
+  runAsNonRoot: false
+  runAsUser: 0
 EOF
 
 echo "-- Upgrade the helm: $LOKI_VERSION"
 helm repo add loki https://grafana.github.io/helm-charts
 helm repo update
 helm upgrade --version $LOKI_VERSION loki loki/loki --values $LOKI_VALUES
-sleep 30s
+sleep 100s
 echo "-- python script"
 cat << EOF > $PYTHON_SCRIPT
 #!/usr/bin/python3
@@ -139,7 +142,7 @@ from dateutil.relativedelta import relativedelta
 
 
 # target location of the files on S3  
-BUCKET = '<Bucket Name>'
+BUCKET = '$BUCKET_NAME'
 # Source location of files on local system 
 DATA_FILES_LOCATION   = "/tmp/data/loki/chunks"
 s3 = boto3.resource('s3')
@@ -189,7 +192,7 @@ def upload():
                 s3.Bucket(BUCKET).upload_file(src, dst)
                 print(f" Data : {counter}")
                 counter = counter + 1
-                logging.basicConfig(filename="log-migration.txt", level=logging.DEBUG)
+                logging.basicConfig(filename="log-migration.txt", level=logging.ERROR)
                 logging.info(f"Filename {full_filename} in month {current_week_file} and year {current_year_file}")
             except binascii.Error as e:
                 logging.error(f"The program encountered an error", str(e))
