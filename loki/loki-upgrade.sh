@@ -33,11 +33,14 @@ import binascii
 from calendar import week
 import sqlite3
 import datetime
+from multiprocessing import Pool
+#from datetime import datetime
 import time
-import glob 
-import boto3 
-import os 
-import logging 
+import time
+import glob
+import boto3
+import os
+import logging
 import base64
 from dateutil.relativedelta import relativedelta
 
@@ -52,7 +55,7 @@ s3 = boto3.resource('s3')
 filenames =  glob.glob(f"{DATA_FILES_LOCATION}/*", recursive=True)
 
 # Sort list of files based on last modification time in ascending order
-filenames = sorted( filenames, key = os.path.getmtime)
+#filenames = sorted( filenames, key = os.path.getmtime)
 first_file = max(filenames, key=os.path.getmtime)
 current_week_file = time.strftime("%W", time.gmtime(os.path.getmtime("{}".format(first_file))))
 current_year_file = time.strftime("%Y", time.gmtime(os.path.getmtime("{}".format(first_file))))
@@ -76,30 +79,32 @@ def get_week(file):
 def get_year(file):
     year = time.strftime("%Y", time.gmtime(os.path.getmtime("{}".format(file))))
     return year
+	
+def upload(myfile):
+    filename = os.path.basename(myfile)
+    if os.path.isfile(myfile) and filename != "index":
+        try:
+            full_filename = str(filename)
+            b64_filename = base64.b64decode(full_filename)
+            b64_filename = b64_filename.decode("utf-8")
+            src = f"{DATA_FILES_LOCATION}/{full_filename}"
+            dst = f"{b64_filename}"
+            s3.Bucket(BUCKET).upload_file(src, dst)
+            print(f"Filename {full_filename} in week {current_week_file} and year {current_year_file}")
+            logging.basicConfig(filename="log-migration.txt", level=logging.ERROR)
+            logging.info(f"Filename {full_filename} in week {current_week_file} and year {current_year_file}")
+        except binascii.Error as e:
+            logging.error(f"The program encountered an error", str(e))
 
-def upload():    
-    data = filtering_data(filenames,current_week_file,current_year_file)
+def pool_handler():
     time_start = datetime.datetime.now()
-    counter = 1
-    for myfile in data:
-        filename = os.path.basename(myfile)    
-        if os.path.isfile(myfile) and filename != "index":
-            try:
-                full_filename = str(filename)            
-                b64_filename = base64.b64decode(full_filename)
-                b64_filename = b64_filename.decode("utf-8")
-                src = f"{DATA_FILES_LOCATION}/{full_filename}"
-                dst = f"{b64_filename}"
-                s3.Bucket(BUCKET).upload_file(src, dst)
-                print(f" Data : {counter}")
-                counter = counter + 1
-                logging.basicConfig(filename="log-migration.txt", level=logging.DEBUG)
-                logging.info(f"Filename {full_filename} in month {current_week_file} and year {current_year_file}")
-            except binascii.Error as e:
-                logging.error(f"The program encountered an error", str(e))
+    pool = Pool(10)
+    processes = [pool.apply_async(upload, args=(x,)) for x in filtering_data(filenames,current_week_file,current_year_file)]
+    result = [p.get() for p in processes]
     print(f" Week : {current_week_file} Year : {current_year_file}")
     time_finish = datetime.datetime.now()
-    addData(time_start,time_finish,counter,f"Done data in week {current_week_file} and year {current_year_file}")
+    addData(time_start,time_finish,len(result),f"Done data in week {current_week_file} and year {current_year_file}")
+
 def addData(time_start,time_finish,total,status):
     try:
         logging.basicConfig(filename="log-sqlite-migration.txt", level=logging.ERROR)
@@ -108,7 +113,7 @@ def addData(time_start,time_finish,total,status):
         print("Connected to SQLite")
         duration = time_finish - time_start
         # Insert data
-        sqlite_insert_with_param = """INSERT INTO 'progres_data'(week,year,time_start,time_finish,duration,total,status) values (?,?,?,?,?,?,?);"""
+        sqlite_insert_with_param = """INSERT INTO 'progres_data'(week,year,time_start,time_finish,duration,total,status) values (?,?,?,?,?,?,?,?);"""
         data = (current_week_file,current_year_file,time_start,time_finish,duration.total_seconds(),total,status)
         cursor.execute(sqlite_insert_with_param, data)
         sqliteConnection.commit()
@@ -132,7 +137,7 @@ def filtering_data(data,current_patch_week, current_patch_year):
 if __name__ == "__main__":
     tic = time.perf_counter()
     while isNotLatest():
-        upload()
+        pool_handler()
         nextPatch()
         if thisLatest:
             break
