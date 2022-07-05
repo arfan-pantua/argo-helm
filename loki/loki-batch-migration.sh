@@ -117,11 +117,11 @@ serviceAccount:
 securityContext:
   runAsNonRoot: false
   runAsUser: 0
-resources: {}
-limits:
-  cpu: 1
-requests:
-  cpu: 0.5
+resources:
+  limits:
+    cpu: 1
+  requests:
+    cpu: 0.5
 EOF
 
 echo "-- Upgrade the helm: $LOKI_VERSION"
