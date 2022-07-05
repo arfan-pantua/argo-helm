@@ -8,10 +8,12 @@ set -e -x
 export LOKI_NAMESPACE=loki # or 'default'
 export LOKI_RELEASE_NAME=loki
 export STORAGE_CLASS_NAME=...
-
+export STORAGE_SIZE=...
+export SERVICE_ACCOUNT_NAME=...
+export BUCKET_NAME=...
 # Set to the specific version
 export LOKI_VERSION=2.11.1
-export CLUSTER_NAME=DEV
+export CLUSTER_NAME=...
 #--------------------------------------------------------------------------------------
 
 # Env Definition
@@ -34,8 +36,6 @@ from calendar import week
 import sqlite3
 import datetime
 from multiprocessing import Pool
-#from datetime import datetime
-import time
 import time
 import glob
 import boto3
@@ -197,7 +197,7 @@ config:
 persistence:
   enabled: true
   storageClassName: $STORAGE_CLASS_NAME
-  size: 300Gi
+  size: $STORAGE_SIZE
 replicas: 1
 serviceAccount:
   create: false
@@ -213,8 +213,6 @@ kubectl scale statefulset/loki --replicas=0
 # Delete container helper
 kubectl delete po loki-0 --force
 sleep 10s
-
-
 
 echo "-- Upgrade the helm: $LOKI_VERSION"
 helm repo add loki https://grafana.github.io/helm-charts
