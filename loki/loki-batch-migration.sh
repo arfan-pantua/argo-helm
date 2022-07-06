@@ -128,7 +128,8 @@ echo "-- Upgrade the helm: $LOKI_VERSION"
 helm repo add loki https://grafana.github.io/helm-charts
 helm repo update
 helm upgrade --version $LOKI_VERSION loki loki/loki --values $LOKI_VALUES
-sleep 100s
+kubectl wait pods -l release=$LOKI_RELEASE_NAME --for condition=Ready --timeout=100s
+sleep 10s
 echo "-- python script"
 cat << EOF > $PYTHON_SCRIPT
 #!/usr/bin/python3
