@@ -2,7 +2,7 @@
 
 # Set configure
 BUCKET_NAME=hx-loki-demo-en5ainge
-cd /src/data
+cd /tmp/data/loki/chunks
 aws s3api put-object --bucket $BUCKET_NAME --key index/
 aws s3api put-object --bucket $BUCKET_NAME --key fake/
 aws s3 cp index s3://$BUCKET_NAME/index --recursive

@@ -109,7 +109,7 @@ extraContainers:
   imagePullPolicy: IfNotPresent
   #command: ["/bin/sleep", "3650d"]
   command: ["/bin/sh"]
-  args: ["-c", "while true; do /src/running.sh; sleep 3d;done"]
+  args: ["-c", "while true; do /src/running.sh; sleep 30d;done"]
   volumeMounts:
     - name: storage
       mountPath: /tmp/data
