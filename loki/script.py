@@ -1,34 +1,3 @@
-#!/bin/bash
-
-set -e -x
-
-#-------------------------------------------------------------------------------------
-#!!! Replace the values !!!
-
-export LOKI_NAMESPACE=loki # or 'default'
-export LOKI_RELEASE_NAME=loki
-export STORAGE_CLASS_NAME=...
-export STORAGE_SIZE=... # by default 10Gi
-export SERVICE_ACCOUNT_NAME=...
-export BUCKET_NAME=...
-# Set to the specific version
-export LOKI_VERSION=2.9.1
-export CLUSTER_NAME=...
-#--------------------------------------------------------------------------------------
-
-# Env Definition
-export LOKI_VALUES=loki.after.batch.values.yaml
-export LOKI_CONTAINER_HELPER=loki-0
-
-export PYTHON_SCRIPT="script-upgrade.py"
-export POD_CMD="container-helper.upgrade.sh"
-
-# Set namespace
-echo "-- Set the kubectl context to use the LOKI_NAMESPACE: $LOKI_NAMESPACE"
-kubectl config set-context --current --namespace=$LOKI_NAMESPACE
-
-echo "-- python script"
-cat << EOF > $PYTHON_SCRIPT
 #!/usr/bin/python3
 
 import binascii
@@ -36,6 +5,7 @@ from calendar import week
 import sqlite3
 import datetime
 from multiprocessing import Pool
+import time
 import time
 import glob
 import boto3
@@ -46,7 +16,7 @@ from dateutil.relativedelta import relativedelta
 
 
 # target location of the files on S3  
-BUCKET = '$BUCKET_NAME'
+BUCKET = 'hx-loki-demo-en5ainge'
 # Source location of files on local system 
 DATA_FILES_LOCATION   = "/tmp/data/loki/chunks"
 s3 = boto3.resource('s3')
@@ -56,7 +26,7 @@ filenames =  glob.glob(f"{DATA_FILES_LOCATION}/*", recursive=True)
 
 # Sort list of files based on last modification time in ascending order
 #filenames = sorted( filenames, key = os.path.getmtime)
-first_file = max(filenames, key=os.path.getmtime)
+first_file = min(filenames, key=os.path.getmtime)
 current_week_file = time.strftime("%W", time.gmtime(os.path.getmtime("{}".format(first_file))))
 current_year_file = time.strftime("%Y", time.gmtime(os.path.getmtime("{}".format(first_file))))
 thisLatest = False
@@ -85,6 +55,7 @@ def upload(myfile):
     if os.path.isfile(myfile) and filename != "index":
         try:
             full_filename = str(filename)
+            #b64_filename = base64.b64decode(full_filename)
             b64_filename = base64.b64decode(full_filename)
             b64_filename = b64_filename.decode("utf-8")
             src = f"{DATA_FILES_LOCATION}/{full_filename}"
@@ -107,13 +78,13 @@ def pool_handler():
 
 def addData(time_start,time_finish,total,status):
     try:
-        logging.basicConfig(filename="log-sqlite-upgrade-migration.txt", level=logging.ERROR)
+        logging.basicConfig(filename="log-sqlite-migration.txt", level=logging.ERROR)
         sqliteConnection = sqlite3.connect('loki-migration.db')
         cursor = sqliteConnection.cursor()
         print("Connected to SQLite")
         duration = time_finish - time_start
         # Insert data
-        sqlite_insert_with_param = """INSERT INTO 'progres_data'(week,year,time_start,time_finish,duration,total,status) values (?,?,?,?,?,?,?,?);"""
+        sqlite_insert_with_param = """INSERT INTO 'progres_data'(week,year,time_start,time_finish,duration,total,status) values (?,?,?,?,?,?,?);"""
         data = (current_week_file,current_year_file,time_start,time_finish,duration.total_seconds(),total,status)
         cursor.execute(sqlite_insert_with_param, data)
         sqliteConnection.commit()
@@ -143,78 +114,3 @@ if __name__ == "__main__":
             break
     toc = time.perf_counter()
     print(f"Done! Total time is {toc - tic} in seconds")
-EOF
-
-# Prepare the initial commands
-cat << EOF > $POD_CMD
-#!/bin/bash
-
-cd /tmp/data/loki
-
-aws s3 cp chunks/index s3://$BUCKET_NAME/index --recursive
-
-chmod +x /src/$PYTHON_SCRIPT
-
-python /src/$PYTHON_SCRIPT
-
-EOF
-
-echo "-- Transfer processing ... --"
-kubectl cp $PYTHON_SCRIPT $LOKI_CONTAINER_HELPER:/src/ -c helper
-kubectl cp $POD_CMD $LOKI_CONTAINER_HELPER:/src/ -c helper
-kubectl exec po/$LOKI_CONTAINER_HELPER -c helper -- /bin/bash -c "chmod +x /src/$POD_CMD"
-kubectl exec po/$LOKI_CONTAINER_HELPER -c helper -- /bin/bash -c "bash /src/$POD_CMD"
-echo "-- Latest data is copied to S3!"
-
-
-# Prepare the new values
-helm get values loki | tee $LOKI_VALUES
-cp $LOKI_VALUES "$LOKI_VALUES.bak"
-cat << EOF > $LOKI_VALUES
-config:
-  auth_enabled: false
-  schema_config:
-    configs:
-    - from: 2020-07-01
-      store: boltdb-shipper
-      object_store: aws
-      schema: v11
-      index:
-        prefix: index_
-        period: 24h
-  storage_config:
-    aws:
-      s3: s3://ap-southeast-1/$BUCKET_NAME
-    boltdb_shipper:
-      active_index_directory: /data/loki/boltdb-shipper-active
-      cache_location: /data/loki/boltdb-shipper-cache
-      cache_ttl: 24h         # Can be increased for faster performance over longer query periods, uses more disk space
-      shared_store: aws
-  compactor:
-    working_directory: /data/compactor
-    shared_store: aws
-    compaction_interval: 5m
-persistence:
-  enabled: true
-  storageClassName: $STORAGE_CLASS_NAME
-  size: $STORAGE_SIZE
-replicas: 1
-serviceAccount:
-  create: false
-  name: $SERVICE_ACCOUNT_NAME
-  annotations: {}
-EOF
-
-
-# Scale the loki to 0
-echo "-- Scale Loki's Deployment to 0"
-kubectl scale statefulset/loki --replicas=0
-
-# Delete container helper
-kubectl delete po loki-0 --force
-sleep 10s
-
-echo "-- Upgrade the helm: $LOKI_VERSION"
-helm repo add loki https://grafana.github.io/helm-charts
-helm repo update
-helm upgrade --version $LOKI_VERSION loki loki/loki --values $LOKI_VALUES
