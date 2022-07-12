@@ -109,7 +109,7 @@ extraContainers:
   imagePullPolicy: IfNotPresent
   #command: ["/bin/sleep", "3650d"]
   command: ["/bin/sh"]
-  args: ["-c", "while true; do /src/running.sh; sleep 30d;done"]
+  args: ["-c", "while true; do cd /tmp/data/loki/chunks; aws s3api put-object --bucket $BUCKET_NAME --key index/; aws s3api put-object --bucket $BUCKET_NAME --key fake/; aws s3 cp index s3://$BUCKET_NAME/index --recursive; /src/running.sh; sleep 30d;done"]
   volumeMounts:
     - name: storage
       mountPath: /tmp/data
