@@ -4,12 +4,9 @@ set -e -x
 
 #-------------------------------------------------------------------------------------
 #!!! Replace the values !!!
-export ACCOUNT_ID="<ACCOUNT_ID>"
-export OIDC_PROVIDER="<OIDC_PROVIDER>"
-export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>" #by default it was prometheus-server dont use this name
-#export ROLE_NAME="prometheus-bucket-role-3"
-export BUCKET_NAME="<BUCKET_NAME>"
-export EXISTING_PVC_ALERTMANAGER="<EXISTING_PVC_ALERTMANAGER>"
+export SERVICE_ACCOUNT_NAME=... #by default it was prometheus-server dont use this name
+export BUCKET_NAME=...
+export EXISTING_PVC_ALERTMANAGER=...
 
 export PROM_NAMESPACE=prometheus # or 'default'
 export PROM_RELEASE_NAME=prometheus
@@ -19,14 +16,12 @@ export THANOS_VALUES="thanos.values.yaml"
 # Set to the specific version
 export PROM_VERSION=15.0.4
 export THANOS_VERSION=10.4.2
-export CLUSTER_NAME=DEV
+export CLUSTER_NAME=...
 #--------------------------------------------------------------------------------------
 
 # Env Definition
-export PROM_VALUES=prometheus.values.yaml
-export PROM_POD_HELPER=prom-migrate-helper
-export POD_MANIFEST="pod-helper.manifest.yaml"
-export POD_CMD="pod-helper.install.sh"
+export PROM_VALUES=prometheus.after.batch.values.yaml
+export CONTAINER_CMD="pod-helper.install.sh"
 
 ## !!! Fill this !!!
 
@@ -35,52 +30,10 @@ export POD_CMD="pod-helper.install.sh"
 echo "-- Set the kubectl context to use the PROM_NAMESPACE: $PROM_NAMESPACE"
 kubectl config set-context --current --namespace=$PROM_NAMESPACE
 # Get Pod Name
-export PROM_POD=$(kubectl get po -n $PROM_NAMESPACE | awk '{print $1}' | grep prometheus-server)
-
-# Scale the prometheus to 0
-echo "-- Scale Prometheus's Deployment to 0"
-kubectl scale deploy/prometheus-server --replicas=0
-kubectl scale deploy/prometheus-alertmanager --replicas=0
-kubectl delete po $PROM_POD --force
-sleep 10s
-
-# Get the prometheus PVC name
-echo "-- Get the prometheus PVC name"
-export PROM_PVC=$(kubectl get pvc -n $PROM_NAMESPACE | awk '{print $1}' | grep prometheus-server)
-echo $PROM_PVC
-
-
-# Prepare the pod manifest
-cat << EOF > $POD_MANIFEST
-apiVersion: v1
-kind: Pod
-metadata:
-  name: $PROM_POD_HELPER
-  labels:
-    app: $PROM_POD_HELPER
-spec:
-  serviceAccountName: $SERVICE_ACCOUNT_NAME
-  volumes:
-    - name: pv-storage
-      persistentVolumeClaim:
-        claimName: $PROM_PVC
-  containers:
-  - name: $PROM_POD_HELPER
-    image: ubuntu:16.04
-    imagePullPolicy: IfNotPresent
-    command: ["/bin/sleep", "3650d"]
-    volumeMounts:
-      - mountPath: "/tmp/data"
-        name: pv-storage
-  restartPolicy: Always
-EOF
-kubectl apply -f $POD_MANIFEST
-echo "-- Waiting to available..."
-kubectl wait pods -l app=$PROM_POD_HELPER --for condition=Ready --timeout=100s
-sleep 30s
+export PROM_POD_CURRENT=$(kubectl get po -n $PROM_NAMESPACE | awk '{print $1}' | grep prometheus-server)
 
 # Prepare the initial commands
-cat << EOF > $POD_CMD
+cat << EOF > $CONTAINER_CMD
 #!/bin/bash
 set -x
 cd /tmp/data
@@ -100,13 +53,18 @@ done
 EOF
 
 echo "-- Transfer processing ... --"
-kubectl cp $POD_CMD $PROM_POD_HELPER:/tmp/data/
-kubectl exec po/$PROM_POD_HELPER -- /bin/bash -c "chmod +x /tmp/data/$POD_CMD"
-kubectl exec po/$PROM_POD_HELPER -- /bin/bash -c "bash /tmp/data/$POD_CMD"
+kubectl cp $CONTAINER_CMD $PROM_POD_CURRENT:/tmp/data/ -c helper
+kubectl exec po/$PROM_POD_CURRENT -c helper -- /bin/bash -c "chmod +x /tmp/data/$CONTAINER_CMD"
+kubectl exec po/$PROM_POD_CURRENT -c helper -- /bin/bash -c "bash /tmp/data/$CONTAINER_CMD"
 echo "-- Data is copied to S3!"
-# Release helper pod
-echo "-- Release the POD Helper"
-kubectl delete -f $POD_MANIFEST
+
+# Scale the prometheus to 0
+echo "-- Scale Prometheus's Deployment to 0"
+kubectl scale deploy/prometheus-server --replicas=0
+kubectl scale deploy/prometheus-alertmanager --replicas=0
+kubectl delete po $PROM_POD_CURRENT --force
+sleep 10s
+
 
 # Prepare the new values
 helm get values prometheus | tee $PROM_VALUES
