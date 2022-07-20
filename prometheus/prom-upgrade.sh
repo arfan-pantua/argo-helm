@@ -4,12 +4,9 @@ set -e -x
 
 #-------------------------------------------------------------------------------------
 #!!! Replace the values !!!
-export ACCOUNT_ID="<ACCOUNT_ID>"
-export OIDC_PROVIDER="<OIDC_PROVIDER>"
-export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>" #by default it was prometheus-server dont use this name
-export ROLE_NAME="<ROLE_NAME>"
-export BUCKET_NAME="<BUCKET_NAME>"
-export POLICY_NAME="<POLICY_NAME>"
+export SERVICE_ACCOUNT_NAME=... #by default it was prometheus-server dont use this name
+export BUCKET_NAME=...
+export EXISTING_PVC_ALERTMANAGER=...
 
 export PROM_NAMESPACE=prometheus # or 'default'
 export PROM_RELEASE_NAME=prometheus
@@ -19,14 +16,12 @@ export THANOS_VALUES="thanos.values.yaml"
 # Set to the specific version
 export PROM_VERSION=15.0.4
 export THANOS_VERSION=10.4.2
-export CLUSTER_NAME=DEV
+export CLUSTER_NAME=...
 #--------------------------------------------------------------------------------------
 
 # Env Definition
-export PROM_VALUES=prometheus.values.yaml
-export PROM_POD_HELPER=prom-migrate-helper
-export POD_MANIFEST="pod-helper.manifest.yaml"
-export POD_CMD="pod-helper.install.sh"
+export PROM_VALUES=prometheus.after.batch.values.yaml
+export CONTAINER_CMD="pod-helper.install.sh"
 
 ## !!! Fill this !!!
 
@@ -34,136 +29,42 @@ export POD_CMD="pod-helper.install.sh"
 # Set namespace
 echo "-- Set the kubectl context to use the PROM_NAMESPACE: $PROM_NAMESPACE"
 kubectl config set-context --current --namespace=$PROM_NAMESPACE
+# Get Pod Name
+export PROM_POD_CURRENT=$(kubectl get po -n $PROM_NAMESPACE | awk '{print $1}' | grep prometheus-server)
 
-# Create Service Account
-kubectl create serviceaccount $SERVICE_ACCOUNT_NAME
+# Prepare the initial commands
+cat << EOF > $CONTAINER_CMD
+#!/bin/bash
+set -x
+cd /tmp/data
+curr_month=$(date +%m)
+curr_year=$(date +%Y)
+path="/tmp/data/*"
+for file in $path
+do
+    file_month=$(date -r $file +%m)
+    file_year=$(date -r $file +%Y)
+    if [[ $file_month == $curr_month && $file_year == $curr_year ]]
+    then
+      aws s3 cp "$file" s3://$BUCKET_NAME/$file --recursive
+    fi
+done
 
-###---
-cat << EOF > trust.json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringEquals": {
-          "${OIDC_PROVIDER}:aud": "sts.amazonaws.com",
-          "${OIDC_PROVIDER}:sub": "system:serviceaccount:${PROM_NAMESPACE}:${SERVICE_ACCOUNT_NAME}"
-        }
-      }
-    }
-  ]
-}
 EOF
 
-ROLE_ARN=$(aws iam create-role --role-name ${ROLE_NAME} \
-    --assume-role-policy-document file://trust.json)
-
-kubectl annotate serviceaccount -n ${PROM_NAMESPACE} \
-    ${SERVICE_ACCOUNT_NAME} \
-    eks.amazonaws.com/role-arn=$(echo $ROLE_ARN | jq -r '.Role.Arn')
-echo "-- Service Account and role were created"
-
-###---
-cat << EOF > policy.json
-{
-    "Version": "2012-10-17",
-    "Statement": [
-        {
-            "Sid": "Statement",
-            "Effect": "Allow",
-            "Action": [
-                "s3:ListBucket",
-                "s3:GetObject",
-                "s3:DeleteObject",
-                "s3:PutObject"
-            ],
-            "Resource": [
-                "arn:aws:s3:::${BUCKET_NAME}/*",
-                "arn:aws:s3:::${BUCKET_NAME}"
-            ]
-        }
-    ]
-}
-EOF
-POLICY_ARN=$(aws iam create-policy --policy-name ${POLICY_NAME} --policy-document file://policy.json)
-aws iam attach-role-policy --policy-arn $(echo $POLICY_ARN | jq -r '.Policy.Arn') --role-name ${ROLE_NAME}
-
-echo "-- Policy to access S3 bucket was attached to role $ROLE_NAME --"
-
-
+echo "-- Transfer processing ... --"
+kubectl cp $CONTAINER_CMD $PROM_POD_CURRENT:/tmp/data/ -c helper
+kubectl exec po/$PROM_POD_CURRENT -c helper -- /bin/bash -c "chmod +x /tmp/data/$CONTAINER_CMD"
+kubectl exec po/$PROM_POD_CURRENT -c helper -- /bin/bash -c "bash /tmp/data/$CONTAINER_CMD"
+echo "-- Data is copied to S3!"
 
 # Scale the prometheus to 0
 echo "-- Scale Prometheus's Deployment to 0"
 kubectl scale deploy/prometheus-server --replicas=0
 kubectl scale deploy/prometheus-alertmanager --replicas=0
+kubectl delete po $PROM_POD_CURRENT --force
 sleep 10s
 
-# Get the prometheus PVC name
-echo "-- Get the prometheus PVC name"
-export PROM_PVC=$(kubectl get pvc -n $PROM_NAMESPACE | awk '{print $1}' | grep prometheus-server)
-echo $PROM_PVC
-
-
-# Prepare the pod manifest
-cat << EOF > $POD_MANIFEST
-apiVersion: v1
-kind: Pod
-metadata:
-  name: $PROM_POD_HELPER
-  labels:
-    app: $PROM_POD_HELPER
-spec:
-  serviceAccountName: $SERVICE_ACCOUNT_NAME
-  volumes:
-    - name: pv-storage
-      persistentVolumeClaim:
-        claimName: $PROM_PVC
-  containers:
-  - name: $PROM_POD_HELPER
-    image: ubuntu:16.04
-    imagePullPolicy: IfNotPresent
-    command: ["/bin/sleep", "3650d"]
-    volumeMounts:
-      - mountPath: "/tmp/data"
-        name: pv-storage
-  restartPolicy: Always
-EOF
-kubectl apply -f $POD_MANIFEST
-echo "-- Waiting to available..."
-kubectl wait pods -l app=$PROM_POD_HELPER --for condition=Ready --timeout=100s
-sleep 30s
-
-# Prepare the initial commands
-cat << EOF > $POD_CMD
-#!/bin/bash
-set -x
-apt update -y && apt -y upgrade
-
-apt install curl zip -y
-
-cd /home
-curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip
-
-unzip awscliv2.zip
-
-./aws/install
-
-aws s3 cp /tmp/data s3://$BUCKET_NAME --recursive
-EOF
-
-echo "-- Transfer processing ... --"
-kubectl cp $POD_CMD $PROM_POD_HELPER:/tmp/data/
-kubectl exec po/$PROM_POD_HELPER -- /bin/bash -c "chmod +x /tmp/data/$POD_CMD"
-kubectl exec po/$PROM_POD_HELPER -- /bin/bash -c "bash /tmp/data/$POD_CMD"
-echo "-- Data is copied to S3!"
-# Release helper pod
-echo "-- Release the POD Helper"
-kubectl delete -f $POD_MANIFEST
 
 # Prepare the new values
 helm get values prometheus | tee $PROM_VALUES
@@ -182,6 +83,9 @@ serviceAccounts:
     create: false
     name: $SERVICE_ACCOUNT_NAME
     annotations: {}
+alertmanager:
+  persistentVolume:
+    existingClaim: $EXISTING_PVC_ALERTMANAGER
 server:
   replicaCount: 1
   # Keep the metrics for 3 months
@@ -201,7 +105,7 @@ server:
     storage.tsdb.max-block-duration: 2h
   service:
     gRPC:
-      enabled: true  
+      enabled: true
   sidecarContainers:
   - name: thanos-sc
     image: quay.io/thanos/thanos:v0.26.0
@@ -264,7 +168,7 @@ query:
   - query
   - --store=prometheus-server.$PROM_NAMESPACE.svc.cluster.local:10901
   - --store=dnssrv+_grpc._tcp.thanos-storegateway.$PROM_NAMESPACE.svc.cluster.local
-  
+
 compactor:
   enabled: true
   serviceAccount:
@@ -281,7 +185,7 @@ storegateway:
     existingServiceAccount: "$SERVICE_ACCOUNT_NAME"
   args:
   - store
-  - --objstore.config=\$(OBJSTORE_CONFIG)  
+  - --objstore.config=\$(OBJSTORE_CONFIG)
   extraEnvVars:
   - name: OBJSTORE_CONFIG
     valueFrom:
@@ -293,5 +197,3 @@ EOF
 helm repo add thanos https://charts.bitnami.com/bitnami
 helm repo update
 helm upgrade --install --version $THANOS_VERSION thanos thanos/thanos --values $THANOS_VALUES
-
-#rm $THANOS_CONF_FILE $THANOS_VALUES $PROM_VALUES
