@@ -6,166 +6,60 @@ set -e -x
 #!!! Replace the values !!!
 
 export LOKI_NAMESPACE=loki # or 'default'
-export LOKI_RELEASE_NAME=loki
 export STORAGE_CLASS_NAME=...
-export STORAGE_SIZE=... # by default 10Gi
 export SERVICE_ACCOUNT_NAME=...
+export NEW_PVC=...
+export NEW_STORAGE_SIZE=... # by default 10Gi
+export BUCKET_NAME=...
+export JOB_LATEST_MANUAL=...
+
 # Set to the specific version
 export LOKI_VERSION=2.9.1
 export CLUSTER_NAME=...
 #--------------------------------------------------------------------------------------
 
 # Env Definition
-export LOKI_VALUES=loki.after.batch.values.yaml
-export LOKI_CONTAINER_HELPER=loki-0
-export BUCKET_NAME=hx-loki-demo-en5ainge
-
-export PYTHON_SCRIPT="script-upgrade.py"
-export POD_CMD="container-helper.upgrade.sh"
+export LOKI_VALUES=loki.values.yaml
+export LOKI_VALUES_PVC=loki.pvc.yaml
 
 # Set namespace
 echo "-- Set the kubectl context to use the LOKI_NAMESPACE: $LOKI_NAMESPACE"
 kubectl config set-context --current --namespace=$LOKI_NAMESPACE
 
-echo "-- python script"
-cat << EOF > $PYTHON_SCRIPT
-#!/usr/bin/python3
+# Get the loki cron job name
+echo "-- Get the loki Cron Job name"
+export LOKI_CRON_JOB_NAME=$(kubectl get cronjob -o custom-columns=:.metadata.name -n $LOKI_NAMESPACE)
+echo $LOKI_CRON_JOB_NAME
 
-import binascii
-from calendar import week
-import sqlite3
-import datetime
-from multiprocessing import Pool
-import time
-import glob
-import boto3
-import os
-import logging
-import base64
-from dateutil.relativedelta import relativedelta
+# Get the loki job name
+echo "-- Get the loki Cron Job name"
+export LOKI_JOB_NAME=$(kubectl get jobs -o custom-columns=:.metadata.name -n $LOKI_NAMESPACE)
+echo $LOKI_JOB_NAME
 
-
-# target location of the files on S3  
-BUCKET = '$BUCKET_NAME'
-# Source location of files on local system 
-DATA_FILES_LOCATION   = "/tmp/data/loki/chunks"
-s3 = boto3.resource('s3')
-# The list of files we're uploading to S3 
-
-filenames =  glob.glob(f"{DATA_FILES_LOCATION}/*", recursive=True)
-
-# Sort list of files based on last modification time in ascending order
-#filenames = sorted( filenames, key = os.path.getmtime)
-first_file = max(filenames, key=os.path.getmtime)
-current_week_file = time.strftime("%W", time.gmtime(os.path.getmtime("{}".format(first_file))))
-current_year_file = time.strftime("%Y", time.gmtime(os.path.getmtime("{}".format(first_file))))
-thisLatest = False
-def isNotLatest():
-    global thisLatest
-    latest_file = max(filenames, key=os.path.getmtime)
-    latest_week_file = get_week(latest_file)
-    latest_year_file = get_year(latest_file)
-    if latest_week_file == current_week_file and latest_year_file == current_year_file:
-        thisLatest= True
-    return True
-def nextPatch():
-    global current_week_file, current_year_file
-    next_week = datetime.date(int(current_year_file), 1, 1) + relativedelta(weeks=+int(current_week_file)+1)
-    current_week_file = next_week.strftime("%W")
-    current_year_file = next_week.strftime("%Y")
-def get_week(file):
-    week = time.strftime("%W", time.gmtime(os.path.getmtime("{}".format(file))))
-    return week
-def get_year(file):
-    year = time.strftime("%Y", time.gmtime(os.path.getmtime("{}".format(file))))
-    return year
-	
-def upload(myfile):
-    filename = os.path.basename(myfile)
-    if os.path.isfile(myfile) and filename != "index":
-        try:
-            full_filename = str(filename)
-            b64_filename = base64.b64decode(full_filename)
-            b64_filename = b64_filename.decode("utf-8")
-            src = f"{DATA_FILES_LOCATION}/{full_filename}"
-            dst = f"{b64_filename}"
-            s3.Bucket(BUCKET).upload_file(src, dst)
-            print(f"Filename {full_filename} in week {current_week_file} and year {current_year_file}")
-            logging.basicConfig(filename="log-migration.txt", level=logging.ERROR)
-            logging.info(f"Filename {full_filename} in week {current_week_file} and year {current_year_file}")
-        except binascii.Error as e:
-            logging.error(f"The program encountered an error", str(e))
-
-def pool_handler():
-    time_start = datetime.datetime.now()
-    pool = Pool(10)
-    processes = [pool.apply_async(upload, args=(x,)) for x in filtering_data(filenames,current_week_file,current_year_file)]
-    result = [p.get() for p in processes]
-    print(f" Week : {current_week_file} Year : {current_year_file}")
-    time_finish = datetime.datetime.now()
-    addData(time_start,time_finish,len(result),f"Done data in week {current_week_file} and year {current_year_file}")
-
-def addData(time_start,time_finish,total,status):
-    try:
-        logging.basicConfig(filename="log-sqlite-upgrade-migration.txt", level=logging.ERROR)
-        sqliteConnection = sqlite3.connect('loki-migration.db')
-        cursor = sqliteConnection.cursor()
-        print("Connected to SQLite")
-        duration = time_finish - time_start
-        # Insert data
-        sqlite_insert_with_param = """INSERT INTO 'progres_data'(week,year,time_start,time_finish,duration,total,status) values (?,?,?,?,?,?,?,?);"""
-        data = (current_week_file,current_year_file,time_start,time_finish,duration.total_seconds(),total,status)
-        cursor.execute(sqlite_insert_with_param, data)
-        sqliteConnection.commit()
-    except sqlite3.Error as error:
-        logging.error(f"The program encountered an error", str(error))
-    finally:
-        if sqliteConnection:
-            sqliteConnection.close()
-            print("sqlite connection is closed")
-def filtering_data(data,current_patch_week, current_patch_year):
-    current_patch_files = []
-    while len(current_patch_files)==0:
-        current_patch_files = [f for f in data if get_week(f) == current_patch_week and get_year(f) == current_patch_year]
-        if len(current_patch_files)!=0:
-            break
-        nextPatch()
-        current_patch_week = current_week_file
-        current_patch_year = current_year_file
-    return current_patch_files
-
-if __name__ == "__main__":
-    tic = time.perf_counter()
-    while isNotLatest():
-        pool_handler()
-        nextPatch()
-        if thisLatest:
-            break
-    toc = time.perf_counter()
-    print(f"Done! Total time is {toc - tic} in seconds")
-EOF
-
-# Prepare the initial commands
-cat << EOF > $POD_CMD
-#!/bin/bash
-
-cd /tmp/data/loki
-
-aws s3 cp chunks/index s3://$BUCKET_NAME/index --recursive
-
-chmod +x /src/$PYTHON_SCRIPT
-
-python /src/$PYTHON_SCRIPT
-
-EOF
-
-echo "-- Transfer processing ... --"
-kubectl cp $PYTHON_SCRIPT $LOKI_CONTAINER_HELPER:/src/ -c helper
-kubectl cp $POD_CMD $LOKI_CONTAINER_HELPER:/src/ -c helper
-kubectl exec po/$LOKI_CONTAINER_HELPER -c helper -- /bin/bash -c "chmod +x /src/$POD_CMD"
-kubectl exec po/$LOKI_CONTAINER_HELPER -c helper -- /bin/bash -c "bash /src/$POD_CMD"
+# Running latest job before upgrade
+kubectl create job --from=cronjob/$(echo $LOKI_CRON_JOB_NAME) $JOB_LATEST_MANUAL
+# Waiting for complete
+kubectl wait --for=condition=complete --timeout=100s job/$JOB_LATEST_MANUAL
+sleep 5s
 echo "-- Latest data is copied to S3!"
 
+echo "-- Create new PVC ... --"
+cat << EOF > $LOKI_VALUES_PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: $NEW_PVC
+spec:
+  accessModes:
+    - ReadWriteOnce
+  volumeMode: Filesystem
+  resources:
+    requests:
+      storage: $NEW_STORAGE_SIZE
+  storageClassName: $STORAGE_CLASS_NAME
+EOF
+kubectl apply -f $LOKI_VALUES_PVC
+sleep 10s
 
 # Prepare the new values
 helm get values loki | tee $LOKI_VALUES
@@ -196,8 +90,7 @@ config:
     compaction_interval: 5m
 persistence:
   enabled: true
-  storageClassName: $STORAGE_CLASS_NAME
-  size: $STORAGE_SIZE
+  existingClaim: $NEW_PVC
 replicas: 1
 serviceAccount:
   create: false
@@ -205,16 +98,17 @@ serviceAccount:
   annotations: {}
 EOF
 
-
-# Scale the loki to 0
-echo "-- Scale Loki's Deployment to 0"
-kubectl scale statefulset/loki --replicas=0
-
-# Delete container helper
-kubectl delete po loki-0 --force
-sleep 10s
+# Delete container and uninstall loki helper
+helm uninstall loki
+# Delete all jobs and cronjob
+kubectl delete cronjob $LOKI_CRON_JOB_NAME
+for j in $LOKI_JOB_NAME
+do
+    kubectl delete jobs $j &
+done
+kubectl wait pods --for=delete loki-0 --timeout=80s
 
 echo "-- Upgrade the helm: $LOKI_VERSION"
 helm repo add loki https://grafana.github.io/helm-charts
 helm repo update
-helm upgrade --version $LOKI_VERSION loki loki/loki --values $LOKI_VALUES
+helm upgrade --install --version $LOKI_VERSION loki loki/loki --values $LOKI_VALUES

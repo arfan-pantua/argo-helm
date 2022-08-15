@@ -9,6 +9,7 @@ export OIDC_PROVIDER="<OIDC_PROVIDER>"
 export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>"
 export ROLE_NAME="<ROLE_NAME>"
 export POLICY_NAME="<POLICY_NAME>"
+export BUCKET_NAME="<BUCKET_NAME>"
 
 export LOKI_NAMESPACE=loki # or 'default'
 export LOKI_RELEASE_NAME=loki
@@ -22,7 +23,6 @@ export CLUSTER_NAME=DEMO
 # Env Definition
 export LOKI_VALUES=loki.values.yaml
 export LOKI_CONTAINER_HELPER=loki-0
-export BUCKET_NAME="hx-loki-demo-en5ainge"
 
 export PYTHON_SCRIPT="script.py"
 export CONTAINER_CMD="container-helper.install.sh"
@@ -106,13 +106,16 @@ extraContainers:
 ## Additional containers to be added to the loki pod.
 - name: helper
   image: arfanpantua/loki-patch-migration:debian-11
-  imagePullPolicy: IfNotPresent
+  imagePullPolicy: Always
   #command: ["/bin/sleep", "3650d"]
   command: ["/bin/sh"]
   args: ["-c", "while true; do cd /tmp/data/loki/chunks; aws s3api put-object --bucket $BUCKET_NAME --key index/; aws s3api put-object --bucket $BUCKET_NAME --key fake/; aws s3 cp index s3://$BUCKET_NAME/index --recursive; /src/running.sh; sleep 30d;done"]
   volumeMounts:
     - name: storage
       mountPath: /tmp/data
+  env:
+    - name: BUCKET_NAME
+      value: $BUCKET_NAME
 serviceAccount:
   create: false
   name: $SERVICE_ACCOUNT_NAME
@@ -121,9 +124,12 @@ securityContext:
   runAsUser: 0
 resources:
   limits:
-    cpu: 1
+    cpu: 0.25
+    memory: 1Gi
   requests:
-    cpu: 0.5
+    cpu: 0.20
+    memory: 205Mi
+terminationGracePeriodSeconds: 50
 EOF
 
 echo "-- Upgrade the helm: $LOKI_VERSION"

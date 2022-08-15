@@ -96,7 +96,7 @@ env:
   GF_DATABASE_USER: $DB_USER
 
 envFromSecret: gf-database-password
-
+replicas: 3
 EOF
 
 echo "-- create secret grafana database password"
@@ -105,7 +105,7 @@ kubectl  create secret generic gf-database-password --from-literal=GF_DATABASE_P
 echo "-- Upgrade the helm: $GF_VERSION to create schema"
 #helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update
-helm upgrade --version $GF_VERSION grafana grafana/grafana --values $GF_VALUES
+helm upgrade --version $GF_VERSION grafana grafana/grafana --values $GF_VALUES --set persistence.enabled=false
 
 echo "-- Waiting to available..."
 kubectl wait pods -l app.kubernetes.io/instance=$GF_RELEASE_NAME --for condition=Ready --timeout=90s

@@ -61,7 +61,6 @@ def upload(myfile):
             dst = f"{b64_filename}"
             s3.Bucket(BUCKET_NAME).upload_file(src, dst)
             print(f"Filename {full_filename} in week {current_week_file} and year {current_year_file}")
-            logging.basicConfig(filename="log-migration.txt", level=logging.ERROR)
             logging.info(f"Filename {full_filename} in week {current_week_file} and year {current_year_file}")
         except binascii.Error as e:
             logging.error(f"The program encountered an error", str(e))
