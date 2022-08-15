@@ -7,62 +7,51 @@ set -e -x
 export SERVICE_ACCOUNT_NAME=... #by default it was prometheus-server dont use this name
 export BUCKET_NAME=...
 export EXISTING_PVC_ALERTMANAGER=...
-
-export PROM_NAMESPACE=prometheus # or 'default'
-export PROM_RELEASE_NAME=prometheus
-export THANOS_CONF_FILE="thanos-storage-config.yaml"
-export THANOS_VALUES="thanos.values.yaml"
+export JOB_LATEST_MANUAL=...
+export NEW_STORAGE_SIZE=...
+export CLUSTER_NAME=...
 
 # Set to the specific version
 export PROM_VERSION=15.0.4
 export THANOS_VERSION=10.4.2
-export CLUSTER_NAME=...
+
 #--------------------------------------------------------------------------------------
 
 # Env Definition
-export PROM_VALUES=prometheus.after.batch.values.yaml
-export CONTAINER_CMD="pod-helper.install.sh"
-
+export PROM_VALUES=prometheus.values.yaml
+export PROM_NAMESPACE=prometheus # or 'default'
+export PROM_RELEASE_NAME=prometheus
+export THANOS_CONF_FILE=thanos-storage-config.yaml
+export THANOS_VALUES=thanos.values.yaml
 ## !!! Fill this !!!
 
 
 # Set namespace
 echo "-- Set the kubectl context to use the PROM_NAMESPACE: $PROM_NAMESPACE"
 kubectl config set-context --current --namespace=$PROM_NAMESPACE
-# Get Pod Name
-export PROM_POD_CURRENT=$(kubectl get po -n $PROM_NAMESPACE | awk '{print $1}' | grep prometheus-server)
 
-# Prepare the initial commands
-cat << EOF > $CONTAINER_CMD
-#!/bin/bash
-set -x
-cd /tmp/data
-curr_month=$(date +%m)
-curr_year=$(date +%Y)
-path="/tmp/data/*"
-for file in $path
-do
-    file_month=$(date -r $file +%m)
-    file_year=$(date -r $file +%Y)
-    if [[ $file_month == $curr_month && $file_year == $curr_year ]]
-    then
-      aws s3 cp "$file" s3://$BUCKET_NAME/$file --recursive
-    fi
-done
+# Get the prometheus cron job name
+echo "-- Get the prometheus Cron Job name"
+export PROM_CRON_JOB_NAME=$(kubectl get cronjob -o custom-columns=:.metadata.name -n $PROM_NAMESPACE)
+echo $PROM_CRON_JOB_NAME
 
-EOF
+# Get the prometheus job name
+echo "-- Get the prometheus Cron Job name"
+export PROM_JOB_NAME=$(kubectl get jobs -o custom-columns=:.metadata.name -n $PROM_NAMESPACE)
+echo $PROM_JOB_NAME
 
-echo "-- Transfer processing ... --"
-kubectl cp $CONTAINER_CMD $PROM_POD_CURRENT:/tmp/data/ -c helper
-kubectl exec po/$PROM_POD_CURRENT -c helper -- /bin/bash -c "chmod +x /tmp/data/$CONTAINER_CMD"
-kubectl exec po/$PROM_POD_CURRENT -c helper -- /bin/bash -c "bash /tmp/data/$CONTAINER_CMD"
-echo "-- Data is copied to S3!"
+# Running latest job before upgrade
+kubectl create job --from=cronjob/$(echo $PROM_CRON_JOB_NAME) $JOB_LATEST_MANUAL
+# Waiting for complete
+
+kubectl wait --for=condition=complete --timeout=100s job/$JOB_LATEST_MANUAL
+sleep 5s
+echo "-- Latest data is copied to S3!"
 
 # Scale the prometheus to 0
 echo "-- Scale Prometheus's Deployment to 0"
 kubectl scale deploy/prometheus-server --replicas=0
 kubectl scale deploy/prometheus-alertmanager --replicas=0
-kubectl delete po $PROM_POD_CURRENT --force
 sleep 10s
 
 
@@ -87,11 +76,12 @@ alertmanager:
   persistentVolume:
     existingClaim: $EXISTING_PVC_ALERTMANAGER
 server:
-  replicaCount: 1
+  replicaCount: 2
   # Keep the metrics for 3 months
   retention: 8h  # Can't use PVs with "Deployments" (1)
   persistentVolume:
     enabled: true
+    size: $NEW_STORAGE_SIZE
   statefulSet:  # (3)
     enabled: true  # required by the Thanos sidecar
     headless:

@@ -10,9 +10,11 @@ export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>" #by default it was promethe
 export ROLE_NAME="<ROLE_NAME>"
 export BUCKET_NAME="<BUCKET_NAME>"
 export POLICY_NAME="<POLICY_NAME>"
+export PROM_PVC=<Current-PVC>
 
 export PROM_NAMESPACE=prometheus # or 'default'
 export PROM_RELEASE_NAME=prometheus
+
 
 # Set to the specific version
 export PROM_VERSION=15.0.4
@@ -99,6 +101,7 @@ echo "-- Create container as sidecar of prometheus --"
 helm get values prometheus | tee $PROM_VALUES
 cp $PROM_VALUES "$PROM_VALUES.bak"
 cat << EOF >> $PROM_VALUES
+    existingClaim: "$PROM_PVC"
   extraArgs:
     storage.tsdb.max-block-duration: 3m
     storage.tsdb.min-block-duration: 3m
