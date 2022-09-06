@@ -10,8 +10,6 @@ export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>" #by default it was promethe
 export ROLE_NAME="<ROLE_NAME>"
 export BUCKET_NAME="<BUCKET_NAME>"
 export POLICY_NAME="<POLICY_NAME>"
-export BUCKET_NAME=...
-export ORGANIZATION_ID=
 export scheduler="* * * * *" # * * * * *
 
 export PROM_NAMESPACE=prometheus # or 'default'
@@ -25,9 +23,6 @@ export PROM_CRON_JOB_NAME=cronjob-migration-helper
 export PROM_VERSION=15.0.4
 export CLUSTER_NAME=DEV
 #--------------------------------------------------------------------------------------
-
-# Env Definition
-export PROM_VALUES=prometheus.values.yaml
 
 
 # Set namespace
@@ -43,7 +38,6 @@ cat << EOF > trust.json
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "statement-cluster",
       "Effect": "Allow",
       "Principal": {
         "Federated": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
@@ -125,13 +119,17 @@ spec:
                 operator: In
                 values:
                 - prometheus
+              - key: component
+                operator: In
+                values:
+                - server
             topologyKey: "kubernetes.io/hostname"
       containers:
       - name: job-migration
-        image: 944131029014.dkr.ecr.ap-southeast-1.amazonaws.com/devops-monitoring-stack-upgrade:2d3670702e97
+        image: 944131029014.dkr.ecr.ap-southeast-1.amazonaws.com/devops-monitoring-stack-upgrade:prometheus
         imagePullPolicy: Always
         command: ["/bin/sh"]
-        args: ["-c", "cd /home; aws s3 cp /tmp/data s3://$BUCKET_NAME --recursive;"]
+        args: ["-c", "bash /src/cronjob.sh $BUCKET_NAME;"]
         volumeMounts:
         - mountPath: /tmp/data
           name: job-migration-storage
@@ -143,7 +141,6 @@ spec:
             cpu: 0.20
             memory: 250Mi
       restartPolicy: Never
-  backoffLimit: 4
 EOF
 
 echo "... apply the job ..."
@@ -177,13 +174,17 @@ spec:
                     operator: In
                     values:
                     - prometheus
+                  - key: component
+                    operator: In
+                    values:
+                    - server
                 topologyKey: "kubernetes.io/hostname"
           containers:
           - name: cronjob-migration
-            image: 944131029014.dkr.ecr.ap-southeast-1.amazonaws.com/devops-monitoring-stack-upgrade:2d3670702e97
+            image: 944131029014.dkr.ecr.ap-southeast-1.amazonaws.com/devops-monitoring-stack-upgrade:prometheus
             imagePullPolicy: Always
             command: ["/bin/sh"]
-            args: ["-c", "bash /src/cronjob.sh $BUCKET_NAME;"]
+            args: ["-c", "bash /src/cronjob.sh $BUCKET_NAME Daily;"]
             volumeMounts:
             - mountPath: /tmp/data
               name: cronjob-migration-storage

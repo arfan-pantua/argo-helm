@@ -30,6 +30,35 @@ export THANOS_VALUES=thanos.values.yaml
 echo "-- Set the kubectl context to use the PROM_NAMESPACE: $PROM_NAMESPACE"
 kubectl config set-context --current --namespace=$PROM_NAMESPACE
 
+
+# Scale the prometheus to 0
+echo "-- Scale Prometheus's Deployment to 0"
+kubectl scale deploy/prometheus-server --replicas=0
+kubectl scale deploy/prometheus-alertmanager --replicas=0
+sleep 10s
+
+
+# Prepare the new values
+helm get values prometheus | tee $PROM_VALUES
+cp $PROM_VALUES "$PROM_VALUES.bak"
+
+echo "-- Update  storage.tsdb.max/min-block-duration --"
+# Prepare sidecar
+helm get values prometheus | tee $PROM_VALUES
+cp $PROM_VALUES "$PROM_VALUES.bak"
+cat << EOF >> $PROM_VALUES
+  extraArgs:
+    storage.tsdb.max-block-duration: 3m
+    storage.tsdb.min-block-duration: 3m
+EOF
+
+echo "-- Upgrade the helm: $PROM_VERSION"
+helm repo add prometheus https://prometheus-community.github.io/helm-charts
+helm repo update
+helm upgrade --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES 
+kubectl wait pods -l release=$PROM_RELEASE_NAME --for condition=Ready --timeout=90s
+sleep 3m
+
 # Get the prometheus cron job name
 echo "-- Get the prometheus Cron Job name"
 export PROM_CRON_JOB_NAME=$(kubectl get cronjob -o custom-columns=:.metadata.name -n $PROM_NAMESPACE)
@@ -43,21 +72,11 @@ echo $PROM_JOB_NAME
 # Running latest job before upgrade
 kubectl create job --from=cronjob/$(echo $PROM_CRON_JOB_NAME) $JOB_LATEST_MANUAL
 # Waiting for complete
-
-kubectl wait --for=condition=complete --timeout=100s job/$JOB_LATEST_MANUAL
+sleep 50s
+kubectl wait --for=condition=complete --timeout=10m job/$JOB_LATEST_MANUAL
 sleep 5s
 echo "-- Latest data is copied to S3!"
 
-# Scale the prometheus to 0
-echo "-- Scale Prometheus's Deployment to 0"
-kubectl scale deploy/prometheus-server --replicas=0
-kubectl scale deploy/prometheus-alertmanager --replicas=0
-sleep 10s
-
-
-# Prepare the new values
-helm get values prometheus | tee $PROM_VALUES
-cp $PROM_VALUES "$PROM_VALUES.bak"
 cat << EOF > $PROM_VALUES
 # Disable the default reloader.
 # Thanos sidecar will be doing this now
@@ -74,7 +93,7 @@ serviceAccounts:
     annotations: {}
 alertmanager:
   persistentVolume:
-    existingClaim: $EXISTING_PVC_ALERTMANAGER
+    enabled: true
 server:
   replicaCount: 2
   # Keep the metrics for 3 months
@@ -129,12 +148,13 @@ config:
   endpoint: s3.ap-southeast-1.amazonaws.com
 EOF
 echo "-- create secret thanos storage "
-kubectl  create secret generic  thanos-storage-config --from-file=thanos-storage-config=thanos-storage-config.yaml
+kubectl  create secret generic  thanos-storage-config --from-file=thanos-storage-config=$THANOS_CONF_FILE
 
 echo "-- Upgrade the helm: $PROM_VERSION"
 helm repo add prometheus https://prometheus-community.github.io/helm-charts
 helm repo update
-kubectl delete deployments.apps -l app.kubernetes.io/instance=prometheus,app.kubernetes.io/name=kube-state-metrics --cascade=orphan
+kubectl delete deployments.apps -l release=$PROM_RELEASE_NAME,component=server
+kubectl wait pods -l release=$PROM_RELEASE_NAME,component=server --for=delete --timeout=300s
 helm upgrade --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES
 
 echo "-- Waiting to available..."
@@ -149,7 +169,6 @@ objstoreConfig: |-
   config:
     bucket: $BUCKET_NAME
     endpoint: s3.ap-southeast-1.amazonaws.com
-
 query:
   enabled: true
   serviceAccount:
@@ -158,11 +177,28 @@ query:
   - query
   - --store=prometheus-server.$PROM_NAMESPACE.svc.cluster.local:10901
   - --store=dnssrv+_grpc._tcp.thanos-storegateway.$PROM_NAMESPACE.svc.cluster.local
-
+  replicaCount: 2
+queryFrontend:
+  replicaCount: 2
+  enabled: true
+  serviceAccount:
+    existingServiceAccount: "$SERVICE_ACCOUNT_NAME"
 compactor:
   enabled: true
   serviceAccount:
     existingServiceAccount: "$SERVICE_ACCOUNT_NAME"
+  args:
+  - compact
+  - --log.level=info
+  - --log.format=logfmt
+  - --http-address=0.0.0.0:10902
+  - --data-dir=/data
+  - --retention.resolution-raw=30d
+  - --retention.resolution-5m=30d
+  - --retention.resolution-1h=10y
+  - --consistency-delay=30m
+  - --objstore.config=\$(OBJSTORE_CONFIG)
+  - --wait
   extraEnvVars:
   - name: OBJSTORE_CONFIG
     valueFrom:
@@ -171,6 +207,7 @@ compactor:
         name: thanos-storage-config
 storegateway:
   enabled: true
+  replicaCount: 2
   serviceAccount:
     existingServiceAccount: "$SERVICE_ACCOUNT_NAME"
   args:
@@ -187,3 +224,10 @@ EOF
 helm repo add thanos https://charts.bitnami.com/bitnami
 helm repo update
 helm upgrade --install --version $THANOS_VERSION thanos thanos/thanos --values $THANOS_VALUES
+
+# Delete all jobs and cronjob
+for j in $PROM_JOB_NAME
+do
+    kubectl delete jobs $j &
+done
+kubectl delete cronjob $PROM_CRON_JOB_NAME

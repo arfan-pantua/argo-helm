@@ -9,12 +9,14 @@ export BUCKET_NAME="<BUCKET_NAME>"
 
 export PROM_NAMESPACE=prometheus # or 'default'
 export PROM_RELEASE_NAME=prometheus
+export PROM_JOB_SIDE=job.rollback.yaml
+export PROM_JOB_NAME=job-rollback-helper
 
 # Set to the specific version
-export PROM_VERSION=13.0.0
+export PROM_VERSION=15.0.4
 #-------------------------------------------------------------------------------------
 # Env Definition
-export PROM_VALUES=prom.values.yaml
+export PROM_VALUES=prometheus.values.yaml
 export PROM_POD_HELPER=prom-migrate-helper
 export POD_MANIFEST="pod-helper.manifest.yaml"
 export PROM_PVC="prometheus-server"
@@ -32,53 +34,68 @@ kubectl scale deploy/prometheus-alertmanager --replicas=0
 echo "-- Upgrade the helm: $PROM_VERSION"
 helm repo add prometheus https://prometheus-community.github.io/helm-charts
 helm repo update
-kubectl delete deployments.apps -l app.kubernetes.io/instance=prometheus,app.kubernetes.io/name=kube-state-metrics --cascade=orphan
+kubectl delete statefulset/prometheus-server
+#kubectl delete deployments.apps -l relese=prometheus,component=server
+kubectl wait pods -l release=$PROM_RELEASE_NAME,component=server --for=delete --timeout=300s
+sleep 50s
 helm upgrade --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES.bak
-
+kubectl wait pods -l release=$PROM_RELEASE_NAME,component=server --for condition=Ready --timeout=300s
 echo "-- uninstall thanos"
 helm uninstall thanos
 sleep 15s
 
-# Prepare the pod manifest
-cat << EOF > $POD_MANIFEST
-apiVersion: v1
-kind: Pod
+
+cat << EOF > $PROM_JOB_SIDE
+apiVersion: batch/v1
+kind: Job
 metadata:
-  name: $PROM_POD_HELPER
-  labels:
-    app: $PROM_POD_HELPER
+  name: $PROM_JOB_NAME
 spec:
-  serviceAccountName: $SERVICE_ACCOUNT_NAME
-  volumes:
-    - name: pv-storage
-      persistentVolumeClaim:
-        claimName: $PROM_PVC
-  containers:
-  - name: $PROM_POD_HELPER
-    image: arfanpantua/monitoring-installer:1.0
-    imagePullPolicy: IfNotPresent
-    command: ["/bin/sh"]
-    args: ["-c", "while true;do cd /home; curl https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip -o awscliv2.zip;unzip awscliv2.zip; ./aws/install; sleep 24h;done"] 
-    volumeMounts:
-      - mountPath: "/tmp/data"
-        name: pv-storage
-  restartPolicy: Always
+  template:
+    spec:
+      volumes:
+        - name: job-migration-storage
+          persistentVolumeClaim:
+            claimName: $PROM_PVC
+      serviceAccountName: $SERVICE_ACCOUNT_NAME
+      affinity:
+        # The Pod affinity rule tells the scheduler to place each replica on a node that has a Pod with the label app=prometheus
+        podAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - labelSelector:
+              matchExpressions:
+              - key: app
+                operator: In
+                values:
+                - prometheus
+            topologyKey: "kubernetes.io/hostname"
+      containers:
+      - name: job-migration
+        image: 706050889978.dkr.ecr.ap-southeast-1.amazonaws.com/devops-monitoring-stack-upgrade:prometheus
+        imagePullPolicy: Always
+        command: ["/bin/sh"]
+        args: ["-c", "cd /home; aws s3 cp s3://$BUCKET_NAME /tmp/data --recursive;"]
+        volumeMounts:
+        - mountPath: /tmp/data
+          name: job-migration-storage
+        resources:
+          limits:
+            cpu: 0.25
+            memory: 250Mi
+          requests:
+            cpu: 0.20
+            memory: 250Mi
+      restartPolicy: Never
+  backoffLimit: 4
 EOF
 
-echo "-- Scale Prometheus's Statefullset to 0"
-kubectl scale deploy/prometheus-server --replicas=0
+echo "... apply the job ..."
+kubectl apply -f $PROM_JOB_SIDE
+kubectl wait --for=condition=complete --timeout=20m job/$PROM_JOB_NAME
 sleep 5s
-kubectl apply -f $POD_MANIFEST
-echo "-- Waiting to available..."
-kubectl wait pods -l app=$PROM_POD_HELPER --for condition=Ready --timeout=100s
-sleep 30s
-echo "-- Migration data to local..."
-kubectl exec po/$PROM_POD_HELPER -- /bin/bash -c "aws s3 cp s3://$BUCKET_NAME /tmp/data  --recursive"
+
+# Delete job
+kubectl delete jobs $PROM_JOB_NAME
 echo "-- Data is copied to local!"
+kubectl delete serviceaccount $SERVICE_ACCOUNT_NAME
 
-# Release helper pod
-echo "-- Release the POD Helper"
-kubectl delete -f $POD_MANIFEST
-
-echo "-- Scale Prometheus's Statefullset to 0"
-kubectl scale deploy/prometheus-server --replicas=1
