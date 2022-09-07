@@ -37,12 +37,6 @@ kubectl scale deploy/prometheus-server --replicas=0
 kubectl scale deploy/prometheus-alertmanager --replicas=0
 sleep 10s
 
-
-# Prepare the new values
-helm get values prometheus | tee $PROM_VALUES
-cp $PROM_VALUES "$PROM_VALUES.bak"
-
-echo "-- Update  storage.tsdb.max/min-block-duration --"
 # Prepare sidecar
 helm get values prometheus | tee $PROM_VALUES
 cp $PROM_VALUES "$PROM_VALUES.bak"
