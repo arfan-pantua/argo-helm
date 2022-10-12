@@ -50,8 +50,13 @@ echo "-- Upgrade the helm: $PROM_VERSION"
 helm repo add prometheus https://prometheus-community.github.io/helm-charts
 helm repo update
 helm upgrade --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES 
-kubectl wait pods -l release=$PROM_RELEASE_NAME --for condition=Ready --timeout=90s
-sleep 3m
+kubectl wait pods -l release=$PROM_RELEASE_NAME --for condition=Ready --timeout=3m
+# waiting about 3 minutes
+for j in {1..10}
+do
+    date +"%T"
+    sleep 20s	
+done
 
 # Get the prometheus cron job name
 echo "-- Get the prometheus Cron Job name"
