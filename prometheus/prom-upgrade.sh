@@ -45,7 +45,7 @@ cat << EOF >> $PROM_VALUES
     storage.tsdb.max-block-duration: 3m
     storage.tsdb.min-block-duration: 3m
 EOF
-
+kubectl delete deployment prometheus-kube-state-metrics
 echo "-- Upgrade the helm: $PROM_VERSION"
 helm repo add prometheus https://prometheus-community.github.io/helm-charts
 helm repo update
@@ -93,6 +93,7 @@ serviceAccounts:
 alertmanager:
   persistentVolume:
     enabled: true
+    existingClaim: $EXISTING_PVC_ALERTMANAGER
 server:
   replicaCount: 2
   # Keep the metrics for 3 months
