@@ -1,5 +1,6 @@
 #!/bin/bash
 
+sqlite3 -line loki-migration.db 'create table if not exists progres_data_uploaded (id INTEGER PRIMARY KEY AUTOINCREMENT,day TEXT NOT NULL,week TEXT NOT NULL,year TEXT NOT NULL, time_start timestamp, time_finish timestamp, duration integer,size integer, filename TEXT)'
 
 if [[ $1 == 'batch-job' ]]
 then
