@@ -11,6 +11,16 @@ export JOB_LATEST_MANUAL=...
 export NEW_STORAGE_SIZE=...
 export CLUSTER_NAME=...
 
+#!!! Just ignore when loki doesnt need to run in dedicated Node, but fill the values if the pod need to run in dedicated node !!!
+export DEDICATED_NODE=false # change to be "true" when loki need to run in dedicated node
+export CURRENT_STORAGE_SIZE="" #Please check by helm get values <loki-release-name> -n <namespace> #the value is persistence.size
+export effect=""
+export key=""
+export value=""
+export operator=""
+export label_node_key=""
+export label_node_value=""
+
 # Set to the specific version
 export PROM_VERSION=15.0.4
 export THANOS_VERSION=10.4.2
@@ -49,8 +59,8 @@ kubectl delete deployment prometheus-kube-state-metrics
 echo "-- Upgrade the helm: $PROM_VERSION"
 helm repo add prometheus https://prometheus-community.github.io/helm-charts
 helm repo update
-helm upgrade --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES 
-kubectl wait pods -l release=$PROM_RELEASE_NAME --for condition=Ready --timeout=3m
+helm upgrade --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES
+kubectl wait pods -l release=$PROM_RELEASE_NAME --for condition=Ready --timeout=5m
 # waiting about 3 minutes
 for j in {1..10}
 do
@@ -71,7 +81,6 @@ echo $PROM_JOB_NAME
 # Running latest job before upgrade
 kubectl create job --from=cronjob/$(echo $PROM_CRON_JOB_NAME) $JOB_LATEST_MANUAL
 # Waiting for complete
-sleep 50s
 kubectl wait --for=condition=complete --timeout=10m job/$JOB_LATEST_MANUAL
 sleep 5s
 echo "-- Latest data is copied to S3!"
@@ -140,6 +149,7 @@ server:
     - name: config-volume
       mountPath: /etc/config
       readOnly: true
+
 EOF
 cat << EOF > $THANOS_CONF_FILE
 type: s3
@@ -153,14 +163,35 @@ kubectl  create secret generic  thanos-storage-config --from-file=thanos-storage
 echo "-- Upgrade the helm: $PROM_VERSION"
 helm repo add prometheus https://prometheus-community.github.io/helm-charts
 helm repo update
-kubectl delete deployments.apps -l release=$PROM_RELEASE_NAME,component=server
-kubectl wait pods -l release=$PROM_RELEASE_NAME,component=server --for=delete --timeout=300s
-helm upgrade --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES
+# kubectl delete deployments.apps -l release=$PROM_RELEASE_NAME,component=server
+# kubectl wait pods -l release=$PROM_RELEASE_NAME,component=server --for=delete --timeout=300s
 
+# scaling pod to zero
+echo "-- Scale Prometheus's Statefull server to 0"
+kubectl scale deployment/prometheus-server --replicas=0
+echo "-- Scale Prometheus's deployment alertmanager server to 0"
+kubectl scale deployment/prometheus-alertmanager --replicas=0
+echo "-- Waiting for terminating pod --"
+kubectl wait pods -l release=$RELEASE_NAME,component=server --for=delete --timeout=5m
+kubectl wait pods -l release=$RELEASE_NAME,component=alertmanager --for=delete --timeout=5m
+
+if [[ $DEDICATED_NODE == false ]]
+then
+    helm upgrade --install --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES
+else
+    helm upgrade --install --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES \
+    --set alertmanager.tolerations[0].operator=$operator,alertmanager.tolerations[0].effect=$effect,alertmanager.tolerations[0].key=$key,alertmanager.tolerations[0].value=$value \
+    --set nodeExporter.tolerations[0].operator=$operator,nodeExporter.tolerations[0].effect=$effect,nodeExporter.tolerations[0].key=$key,nodeExporter.tolerations[0].value=$value \
+    --set server.tolerations[0].operator=$operator,server.tolerations[0].effect=$effect,server.tolerations[0].key=$key,server.tolerations[0].value=$value \
+    --set pushgateway.tolerations[0].operator=$operator,pushgateway.tolerations[0].effect=$effect,pushgateway.tolerations[0].key=$key,pushgateway.tolerations[0].value=$value \
+    --set kube-state-metrics.tolerations[0].operator=$operator,kube-state-metrics.tolerations[0].effect=$effect,kube-state-metrics.tolerations[0].key=$key,kube-state-metrics.tolerations[0].value=$value \
+    --set alertmanager.nodeSelector.$label_node_key=$label_node_value \
+    --set server.nodeSelector.$label_node_key=$label_node_value \
+    --set pushgateway.nodeSelector.$label_node_key=$label_node_value \
+    --set kube-state-metrics.nodeSelector.$label_node_key=$label_node_value
+fi
 echo "-- Waiting to available..."
 sleep 30s
-
-
 echo "-- Deploy Thanos --"
 
 cat << EOF > $THANOS_VALUES
@@ -223,7 +254,21 @@ EOF
 
 helm repo add thanos https://charts.bitnami.com/bitnami
 helm repo update
-helm upgrade --install --version $THANOS_VERSION thanos thanos/thanos --values $THANOS_VALUES
+if [[ $DEDICATED_NODE == false ]]
+then
+    helm upgrade --install --version $THANOS_VERSION thanos thanos/thanos --values $THANOS_VALUES
+else
+    helm upgrade --install --version $THANOS_VERSION thanos thanos/thanos --values $THANOS_VALUES \
+    --set compactor.tolerations[0].operator=$operator,compactor.tolerations[0].effect=$effect,compactor.tolerations[0].key=$key,compactor.tolerations[0].value=$value \
+    --set query.tolerations[0].operator=$operator,query.tolerations[0].effect=$effect,query.tolerations[0].key=$key,query.tolerations[0].value=$value \
+    --set queryFrontend.tolerations[0].operator=$operator,queryFrontend.tolerations[0].effect=$effect,queryFrontend.tolerations[0].key=$key,queryFrontend.tolerations[0].value=$value \
+    --set storegateway.tolerations[0].operator=$operator,storegateway.tolerations[0].effect=$effect,storegateway.tolerations[0].key=$key,storegateway.tolerations[0].value=$value \
+    --set compactor.nodeSelector.$label_node_key=$label_node_value \
+    --set query.nodeSelector.$label_node_key=$label_node_value \
+    --set queryFrontend.nodeSelector.$label_node_key=$label_node_value \
+    --set storegateway.nodeSelector.$label_node_key=$label_node_value
+fi
+
 
 # Delete all jobs and cronjob
 for j in $PROM_JOB_NAME

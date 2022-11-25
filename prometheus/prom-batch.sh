@@ -4,26 +4,36 @@ set -e -x
 
 #-------------------------------------------------------------------------------------
 #!!! Replace the values !!!
-export ACCOUNT_ID="<ACCOUNT_ID>"
-export OIDC_PROVIDER="<OIDC_PROVIDER>"
-export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>" #by default it was prometheus-server dont use this name
-export ROLE_NAME="<ROLE_NAME>"
-export BUCKET_NAME="<BUCKET_NAME>"
-export POLICY_NAME="<POLICY_NAME>"
+export ACCOUNT_ID=...
+export OIDC_PROVIDER=...
+export SERVICE_ACCOUNT_NAME=... #by default it was prometheus-server dont use this name
+export ROLE_NAME=...
+export BUCKET_NAME=...
+export POLICY_NAME=...
 export scheduler="* * * * *" # * * * * *
+export CLUSTER_NAME=...
+export PROM_NAMESPACE=... # or 'default'
+export PROM_RELEASE_NAME=... # label on current prometheus pod
 
-export PROM_NAMESPACE=prometheus # or 'default'
-export PROM_RELEASE_NAME=prometheus
+#!!! Just ignore when prometheus doesnt need to run in dedicated Node, but fill the values if the pod need to run in dedicated node !!!
+export DEDICATED_NODE=false # change to be "true" when prometheus need to run in dedicated node
+export effect=""
+export key=""
+export value=""
+export operator=""
+export label_node_key=""
+export label_node_value=""
+
+
+# Set to the specific version
+export PROM_VERSION=15.0.4
+
+#--------------------------------------------------------------------------------------
+# Env Definition
 export PROM_JOB_SIDE=job.migration.yaml
 export PROM_CRON_JOB_SIDE=cronjob.migration.yaml
 export PROM_JOB_NAME=job-migration-helper
 export PROM_CRON_JOB_NAME=cronjob-migration-helper
-
-# Set to the specific version
-export PROM_VERSION=15.0.4
-export CLUSTER_NAME=DEV
-#--------------------------------------------------------------------------------------
-
 
 # Set namespace
 echo "-- Set the kubectl context to use the PROMETHEUS NAMESPACE: $PROM_NAMESPACE"
@@ -137,12 +147,19 @@ spec:
           limits:
             cpu: 0.25
             memory: 250Mi
-          requests:
-            cpu: 0.20
-            memory: 250Mi
       restartPolicy: Never
-EOF
 
+EOF
+if [[ $DEDICATED_NODE = true ]]
+then
+cat << EOF >> $PROM_JOB_SIDE
+      tolerations:
+      - effect: $effect
+        key: $key
+        operator: $operator
+        value: $value
+EOF
+fi
 echo "... apply the job ..."
 kubectl apply -f $PROM_JOB_SIDE
 
@@ -192,11 +209,17 @@ spec:
               limits:
                 cpu: 0.25
                 memory: 250Mi
-              requests:
-                cpu: 0.20
-                memory: 250Mi
           restartPolicy: Never
 EOF
-
+if [[ $DEDICATED_NODE = true ]]
+then
+cat << EOF >> $PROM_CRON_JOB_SIDE
+          tolerations:
+          - effect: $effect
+            key: $key
+            operator: $operator
+            value: $value
+EOF
+fi
 echo "... apply the cron job ..."
 kubectl apply -f $PROM_CRON_JOB_SIDE
