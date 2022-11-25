@@ -4,20 +4,28 @@ set -e -x
 
 #-------------------------------------------------------------------------------------
 #!!! Replace the values !!!
-export ACCOUNT_ID="<ACCOUNT_ID>"
-export OIDC_PROVIDER="<OIDC_PROVIDER>"
-export SERVICE_ACCOUNT_NAME="<SERVICE_ACCOUNT_NAME>"
-export ROLE_NAME="<ROLE_NAME>"
-export POLICY_NAME="<POLICY_NAME>"
-export BUCKET_NAME="<BUCKET_NAME>"
-
+export ACCOUNT_ID=...
+export OIDC_PROVIDER=...
+export SERVICE_ACCOUNT_NAME=...
+export ROLE_NAME=...
+export POLICY_NAME=...
+export BUCKET_NAME=...
 export LOKI_NAMESPACE=... # or 'default'
 export LOKI_RELEASE_NAME=...
+export CLUSTER_NAME=...
 export scheduler="<scheduler>" # * * * * *
+
+#!!! Just ignore when loki doesnt need to run in dedicated Node, but fill the values if the pod need to run in dedicated node !!!
+export DEDICATED_NODE=false # change to be "true" when loki need to run in dedicated node
+export effect=""
+export key=""
+export value=""
+export operator=""
+export label_node_key=""
+export label_node_value=""
 
 # Set to the specific version
 export LOKI_VERSION=2.9.1
-export CLUSTER_NAME=DEMO
 #--------------------------------------------------------------------------------------
 
 # Env Definition
@@ -124,7 +132,7 @@ spec:
             topologyKey: "kubernetes.io/hostname"
       containers:
       - name: job-migration
-        image: 944131029014.dkr.ecr.ap-southeast-1.amazonaws.com/devops-monitoring-stack-upgrade:1dd185f4e923
+        image: 944131029014.dkr.ecr.ap-southeast-1.amazonaws.com/devops-monitoring-stack-upgrade:loki
         imagePullPolicy: Always
         command: ["/bin/sh"]
         args: ["-c", "cd /tmp/data/loki/chunks; aws s3api put-object --bucket $BUCKET_NAME
@@ -140,12 +148,18 @@ spec:
           limits:
             cpu: 0.25
             memory: 1Gi
-          requests:
-            cpu: 0.20
-            memory: 250Mi
       restartPolicy: Never
-  backoffLimit: 4
 EOF
+if [[ $DEDICATED_NODE = true ]]
+then
+cat << EOF >> $LOKI_JOB_SIDE
+      tolerations:
+      - effect: $effect
+        key: $key
+        operator: $operator
+        value: $value
+EOF
+fi
 
 echo "... apply the job ..."
 kubectl apply -f $LOKI_JOB_SIDE
@@ -181,7 +195,7 @@ spec:
                 topologyKey: "kubernetes.io/hostname"
           containers:
           - name: cronjob-migration
-            image: 944131029014.dkr.ecr.ap-southeast-1.amazonaws.com/devops-monitoring-stack-upgrade:1dd185f4e923
+            image: 944131029014.dkr.ecr.ap-southeast-1.amazonaws.com/devops-monitoring-stack-upgrade:loki
             imagePullPolicy: Always
             command: ["/bin/sh"]
             args: ["-c", "cd /tmp/data/loki/chunks; aws s3 cp index
@@ -196,11 +210,17 @@ spec:
               limits:
                 cpu: 0.25
                 memory: 1Gi
-              requests:
-                cpu: 0.20
-                memory: 250Mi
           restartPolicy: Never
 EOF
-
+if [[ $DEDICATED_NODE = true ]]
+then
+cat << EOF >> $LOKI_CRON_JOB_SIDE
+          tolerations:
+          - effect: $effect
+            key: $key
+            operator: $operator
+            value: $value
+EOF
+fi
 echo "... apply the cron job ..."
 kubectl apply -f $LOKI_CRON_JOB_SIDE
