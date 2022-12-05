@@ -4,16 +4,14 @@ set -e -x
 
 #-------------------------------------------------------------------------------------
 #!!! Replace the values !!!
-
-export PROMTAIL_VERSION=...
-
 export PROMTAIL_NAMESPACE=...
 
 export PROMTAIL_RELEASE_NAME=...
 
 export LOKI_NAMESPACE=...
 #--------------------------------------------------------------------------------------
-
+# Set to the specific version
+export VERSION=2.1.0
 export PROMTAIL_VALUES=promtail.values.yaml
 
 # Set namespace
@@ -39,7 +37,7 @@ config:
 resources:
  limits:
    cpu: 0.2
-   memory: 800Mi
+   memory: 500Mi
 EOF
 
 echo "-- Upgrade the helm: $PROMTAIL_VERSION"
@@ -47,4 +45,4 @@ kubectl label pods -l app=promtail,release=$PROMTAIL_RELEASE_NAME app.kubernetes
 kubectl delete daemonset -l app=promtail,release=$PROMTAIL_RELEASE_NAME --cascade=false
 helm repo add promtail https://grafana.github.io/helm-charts
 helm repo update
-helm upgrade --version $PROMTAIL_VERSION promtail promtail/promtail --values $PROMTAIL_VALUES
+helm upgrade --version $VERSION promtail promtail/promtail --values $PROMTAIL_VALUES
