@@ -10,11 +10,24 @@ export DB_USER=...
 export DB_PASS=...
 export DB_NAME=...
 
-export GF_NAMESPACE=grafana # or 'default'
-export GF_RELEASE_NAME=grafana
+export GF_NAMESPACE=... # or 'default'
+export GF_RELEASE_NAME=...
+
+export ROOT_DOMAIN=...
+export CSRF_TRUSTED_ORIGINS=... # use <space> if values is more than one
+
+#!!! Just ignore when grafana doesnt need to run in dedicated Node, but fill the values if the pod need to run in dedicated node !!!
+export DEDICATED_NODE=false # change to be "true" when grafana need to run in dedicated node
+export effect=""
+export key=""
+export value=""
+export operator=""
+export label_node_key=""
+export label_node_value=""
 
 # Set to the specific version
-export GF_VERSION=6.17.9
+export GF_VERSION=6.30.3
+export APP_VERSION=8.5.15
 #--------------------------------------------------------------------------------------
 
 # Env Definition
@@ -60,6 +73,16 @@ spec:
         psql --host=$DB_HOST --port=$DB_PORT -U $DB_USER --dbname=postgres -c 'create database $DB_NAME'"]
       restartPolicy: Never
 EOF
+if [[ $DEDICATED_NODE = true ]]
+then
+cat << EOF >> $GF_CREATE_DB_JOB_MANIFEST
+      tolerations:
+      - effect: $effect
+        key: $key
+        operator: $operator
+        value: $value
+EOF
+fi
 
 echo "... apply the job ..."
 kubectl apply -f $GF_CREATE_DB_JOB_MANIFEST
@@ -78,7 +101,12 @@ env:
   GF_DATABASE_USER: $DB_USER
 
 envFromSecret: gf-database-password
-
+grafana.ini:
+  server:
+    root_url: https://$ROOT_DOMAIN
+  security:
+    csrf_trusted_origins: $CSRF_TRUSTED_ORIGINS
+  # force_migration: true #for degrade version we need to activate this script
 EOF
 
 echo "-- create secret grafana database password"
@@ -87,11 +115,23 @@ kubectl  create secret generic gf-database-password --from-literal=GF_DATABASE_P
 echo "-- Upgrade the helm: $GF_VERSION to create schema"
 #helm repo add grafana https://grafana.github.io/helm-charts
 helm repo update
-helm upgrade --version $GF_VERSION grafana grafana/grafana --values $GF_VALUES --set replicas=1
+if [[ $DEDICATED_NODE = true ]]
+then
+    helm upgrade --version $GF_VERSION grafana grafana/grafana --values $GF_VALUES --set replicas=1 \
+    --set tolerations[0].operator=$operator,tolerations[0].effect=$effect,tolerations[0].key=$key,tolerations[0].value=$value \
+    --set nodeSelector.$label_node_key=$label_node_value \
+    --set image.repository=grafana/grafana --set image.tag=$APP_VERSION
+else
+    helm upgrade --version $GF_VERSION grafana grafana/grafana --values $GF_VALUES --set replicas=1 \
+    --set image.repository=grafana/grafana --set image.tag=$APP_VERSION
+fi
+
 
 echo "-- Waiting to available..."
 kubectl wait pods -l app.kubernetes.io/instance=$GF_RELEASE_NAME --for condition=Ready --timeout=3m
 
+# Update the new values
+helm get values grafana | tee $GF_VALUES
 
 echo "-- Migrate database job"
 # Prepare Job
@@ -119,7 +159,16 @@ spec:
           name: grafana-pvc
       restartPolicy: Never
 EOF
-
+if [[ $DEDICATED_NODE = true ]]
+then
+cat << EOF >> $GF_MIGRATE_DB_JOB_MANIFEST
+      tolerations:
+      - effect: $effect
+        key: $key
+        operator: $operator
+        value: $value
+EOF
+fi
 echo "Scale grafana pod over 0"
 kubectl scale deploy/grafana --replicas=0
 sleep 5s
