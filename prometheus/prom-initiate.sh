@@ -4,17 +4,18 @@ set -e -x
 
 #-------------------------------------------------------------------------------------
 #!!! Replace the values !!!
+export ACCOUNT_ID=...
+export OIDC_PROVIDER=...
 export SERVICE_ACCOUNT_NAME=... #by default it was prometheus-server dont use this name
+export ROLE_NAME=...
 export BUCKET_NAME=...
 export REGION_S3=...
-export EXISTING_PVC_ALERTMANAGER=...
-export JOB_LATEST_MANUAL=...
-export NEW_STORAGE_SIZE=...
+export POLICY_NAME=...
 export CLUSTER_NAME=...
 
-#!!! Just ignore when loki doesnt need to run in dedicated Node, but fill the values if the pod need to run in dedicated node !!!
+
+#!!! Just ignore when prometheus doesnt need to run in dedicated Node, but fill the values if the pod need to run in dedicated node !!!
 export DEDICATED_NODE=false # change to be "true" when loki need to run in dedicated node
-export CURRENT_STORAGE_SIZE="" #Please check by helm get values <loki-release-name> -n <namespace> #the value is persistence.size
 export effect=""
 export key=""
 export value=""
@@ -24,7 +25,7 @@ export label_node_value=""
 
 # Set to the specific version
 export PROM_VERSION=15.0.4
-export THANOS_VERSION=11.6.8
+export THANOS_VERSION=11.6.5
 
 #--------------------------------------------------------------------------------------
 
@@ -41,50 +42,65 @@ export THANOS_VALUES=thanos.values.yaml
 echo "-- Set the kubectl context to use the PROM_NAMESPACE: $PROM_NAMESPACE"
 kubectl config set-context --current --namespace=$PROM_NAMESPACE
 
+# Create Service Account
+kubectl create serviceaccount $SERVICE_ACCOUNT_NAME
 
-# Scale the prometheus to 0
-echo "-- Scale Prometheus's Deployment to 0"
-kubectl scale deploy/prometheus-server --replicas=0
-kubectl scale deploy/prometheus-alertmanager --replicas=0
-sleep 10s
-
-# Prepare sidecar
-helm get values prometheus | tee $PROM_VALUES
-cp $PROM_VALUES "$PROM_VALUES.bak"
-cat << EOF >> $PROM_VALUES
-  extraArgs:
-    storage.tsdb.max-block-duration: 3m
-    storage.tsdb.min-block-duration: 3m
+###---
+cat << EOF > trust.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "${OIDC_PROVIDER}:aud": "sts.amazonaws.com",
+          "${OIDC_PROVIDER}:sub": "system:serviceaccount:${PROM_NAMESPACE}:${SERVICE_ACCOUNT_NAME}"
+        }
+      }
+    }
+  ]
+}
 EOF
-kubectl delete deployment prometheus-kube-state-metrics
-echo "-- Upgrade the helm: $PROM_VERSION"
-helm repo add prometheus https://prometheus-community.github.io/helm-charts
-helm repo update
-helm upgrade --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES
-kubectl wait pods -l release=$PROM_RELEASE_NAME --for condition=Ready --timeout=5m
-# waiting about 3 minutes
-for j in {1..10}
-do
-    date +"%T"
-    sleep 20s	
-done
 
-# Get the prometheus cron job name
-echo "-- Get the prometheus Cron Job name"
-export PROM_CRON_JOB_NAME=$(kubectl get cronjob -o custom-columns=:.metadata.name -n $PROM_NAMESPACE)
-echo $PROM_CRON_JOB_NAME
+ROLE_ARN=$(aws iam create-role --role-name ${ROLE_NAME} \
+	    --assume-role-policy-document file://trust.json)
 
-# Get the prometheus job name
-echo "-- Get the prometheus Cron Job name"
-export PROM_JOB_NAME=$(kubectl get jobs -o custom-columns=:.metadata.name -n $PROM_NAMESPACE)
-echo $PROM_JOB_NAME
+kubectl annotate serviceaccount -n ${PROM_NAMESPACE} \
+	    ${SERVICE_ACCOUNT_NAME} \
+	        eks.amazonaws.com/role-arn=$(echo $ROLE_ARN | jq -r '.Role.Arn')
+echo "-- Service Account and role were created"
 
-# Running latest job before upgrade
-kubectl create job --from=cronjob/$(echo $PROM_CRON_JOB_NAME) $JOB_LATEST_MANUAL
-# Waiting for complete
-kubectl wait --for=condition=complete --timeout=10m job/$JOB_LATEST_MANUAL
-sleep 5s
-echo "-- Latest data is copied to S3!"
+###---
+cat << EOF > policy.json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "Statement",
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket",
+                "s3:GetObject",
+                "s3:DeleteObject",
+                "s3:PutObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::${BUCKET_NAME}/*",
+                "arn:aws:s3:::${BUCKET_NAME}"
+            ]
+        }
+    ]
+}
+EOF
+POLICY_ARN=$(aws iam create-policy --policy-name ${POLICY_NAME} --policy-document file://policy.json)
+aws iam attach-role-policy --policy-arn $(echo $POLICY_ARN | jq -r '.Policy.Arn') --role-name ${ROLE_NAME}
+
+echo "-- Policy to access S3 bucket was attached to role $ROLE_NAME --"
 
 cat << EOF > $PROM_VALUES
 # Disable the default reloader.
@@ -103,14 +119,12 @@ serviceAccounts:
 alertmanager:
   persistentVolume:
     enabled: true
-    existingClaim: $EXISTING_PVC_ALERTMANAGER
 server:
   replicaCount: 2
   # Keep the metrics for 3 months
   retention: 8h  # Can't use PVs with "Deployments" (1)
   persistentVolume:
     enabled: true
-    size: $NEW_STORAGE_SIZE
   statefulSet:  # (3)
     enabled: true  # required by the Thanos sidecar
     headless:
@@ -127,7 +141,7 @@ server:
       enabled: true
   sidecarContainers:
   - name: thanos-sc
-    image: quay.io/thanos/thanos:v0.30.0
+    image: quay.io/thanos/thanos:v0.26.0
     imagePullPolicy: IfNotPresent
     args:
     - sidecar
@@ -164,18 +178,6 @@ kubectl  create secret generic  thanos-storage-config --from-file=thanos-storage
 echo "-- Upgrade the helm: $PROM_VERSION"
 helm repo add prometheus https://prometheus-community.github.io/helm-charts
 helm repo update
-# kubectl delete deployments.apps -l release=$PROM_RELEASE_NAME,component=server
-# kubectl wait pods -l release=$PROM_RELEASE_NAME,component=server --for=delete --timeout=300s
-
-# scaling pod to zero
-echo "-- Scale Prometheus's Statefull server to 0"
-kubectl scale deployment/prometheus-server --replicas=0
-echo "-- Scale Prometheus's deployment alertmanager server to 0"
-kubectl scale deployment/prometheus-alertmanager --replicas=0
-echo "-- Waiting for terminating pod --"
-kubectl wait pods -l release=$RELEASE_NAME,component=server --for=delete --timeout=5m
-kubectl wait pods -l release=$RELEASE_NAME,component=alertmanager --for=delete --timeout=5m
-
 if [[ $DEDICATED_NODE == false ]]
 then
     helm upgrade --install --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES
@@ -269,11 +271,3 @@ else
     --set queryFrontend.nodeSelector.$label_node_key=$label_node_value \
     --set storegateway.nodeSelector.$label_node_key=$label_node_value
 fi
-
-
-# Delete all jobs and cronjob
-for j in $PROM_JOB_NAME
-do
-    kubectl delete jobs $j &
-done
-kubectl delete cronjob $PROM_CRON_JOB_NAME

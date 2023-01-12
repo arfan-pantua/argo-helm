@@ -106,7 +106,7 @@ grafana.ini:
     root_url: https://$ROOT_DOMAIN
   security:
     csrf_trusted_origins: $CSRF_TRUSTED_ORIGINS
-  # force_migration: true #for degrade version we need to activate this script
+  force_migration: true #for degrade version we need to activate this script
 EOF
 
 echo "-- create secret grafana database password"
@@ -153,7 +153,8 @@ spec:
         imagePullPolicy: Always
         command: ["/bin/sh"]
         args: ["-c", "export PGPASSWORD=$DB_PASS;
-        /tmp/grafana-migrate $GF_PVC_MOUNT_DIR/grafana.db 'postgres://$DB_USER:$DB_PASS@$DB_HOST:$DB_PORT/$DB_NAME?sslmode=disable';"]
+        /tmp/grafana-migrate $GF_PVC_MOUNT_DIR/grafana.db 'postgres://$DB_USER:$DB_PASS@$DB_HOST:$DB_PORT/$DB_NAME?sslmode=disable';
+        psql --host=$DB_HOST --port=$DB_PORT -U $DB_USER --dbname=$DB_NAME -c 'update public.user set is_service_account = false where is_service_account is NULL';"]
         volumeMounts:
         - mountPath: "$GF_PVC_MOUNT_DIR"
           name: grafana-pvc
@@ -180,10 +181,19 @@ kubectl wait --for=condition=complete --timeout=10m job/$GF_MIGRATE_DB_JOB
 echo "-- Migration is complete! Please check jobs log first"
 read -p "Press ENTER to continue, or Ctrl+C to stop..." tmp
 
+echo "Rollback force migration to false"
+
+echo "Change force migration value"
+
+sed -i  "s|force_migration: true *|force_migration: false |" $GF_VALUES
+
 echo "release pvc in grafana"
 helm upgrade --version $GF_VERSION grafana grafana/grafana --values $GF_VALUES --set persistence.enabled=false --set replicas=3
 
-rm $GF_VALUES *.bak
+echo "-- Waiting to available..."
+kubectl wait pods -l app.kubernetes.io/instance=$GF_RELEASE_NAME --for condition=Ready --timeout=3m
+
+# rm $GF_VALUES *.bak
 
 # Get the prometheus job name
 echo "-- Get the prometheus Cron Job name"

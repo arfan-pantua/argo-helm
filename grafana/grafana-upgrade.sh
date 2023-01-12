@@ -39,7 +39,7 @@ grafana.ini:
     root_url: https://$ROOT_DOMAIN
   security:
     csrf_trusted_origins: $CSRF_TRUSTED_ORIGINS
-  # force_migration: true #for degrade version we need to activate this script
+  force_migration: true #for degrade version we need to activate this script
 EOF
 
 # scaling pod to zero
@@ -60,3 +60,20 @@ else
     helm upgrade --version $VERSION grafana grafana/grafana --values $GRAFANA_VALUES --set replicas=3 \
     --set image.repository=grafana/grafana --set image.tag=$APP_VERSION
 fi
+
+echo "Rollback force migration to false"
+
+echo "Change force migration value"
+sed -i  "s|force_migration: true *|force_migration: false |" $GRAFANA_VALUES
+
+if [[ $DEDICATED_NODE = true ]]
+then
+    helm upgrade --version $VERSION grafana grafana/grafana --values $GRAFANA_VALUES --set replicas=3 \
+    --set tolerations[0].operator=$operator,tolerations[0].effect=$effect,tolerations[0].key=$key,tolerations[0].value=$value \
+    --set nodeSelector.$label_node_key=$label_node_value \
+    --set image.repository=grafana/grafana --set image.tag=$APP_VERSION
+else
+    helm upgrade --version $VERSION grafana grafana/grafana --values $GRAFANA_VALUES --set replicas=3 \
+    --set image.repository=grafana/grafana --set image.tag=$APP_VERSION
+fi
+

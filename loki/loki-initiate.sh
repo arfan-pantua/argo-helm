@@ -4,21 +4,23 @@ set -e -x
 
 #-------------------------------------------------------------------------------------
 #!!! Replace the values !!!
-
-export LOKI_NAMESPACE=... # or 'default'
+export ACCOUNT_ID=...
+export OIDC_PROVIDER=...
 export SERVICE_ACCOUNT_NAME=...
+export ROLE_NAME=...
+export POLICY_NAME=...
 export BUCKET_NAME=...
 export REGION_S3=...
-export JOB_LATEST_MANUAL=...
+export LOKI_NAMESPACE=... # or 'default'
 export CLUSTER_NAME=...
 #!!! Just ignore when loki doesnt need to run in dedicated Node, but fill the values if the pod need to run in dedicated node !!!
 export DEDICATED_NODE=false # change to be "true" when loki need to run in dedicated node
-export effect=...
-export key=...
-export value=...
-export operator=...
-export label_node_key=...
-export label_node_value=...
+export effect=""
+export key=""
+export value=""
+export operator=""
+export label_node_key=""
+export label_node_value=""
 
 # Set to the specific version
 export LOKI_VERSION=2.9.1
@@ -26,33 +28,72 @@ export LOKI_VERSION=2.9.1
 
 # Env Definition
 export LOKI_VALUES=loki.values.yaml
-export LOKI_VALUES_PVC=loki.pvc.yaml
 
 # Set namespace
 echo "-- Set the kubectl context to use the LOKI_NAMESPACE: $LOKI_NAMESPACE"
 kubectl config set-context --current --namespace=$LOKI_NAMESPACE
 
-# Get the loki cron job name
-echo "-- Get the loki Cron Job name"
-export LOKI_CRON_JOB_NAME=$(kubectl get cronjob -o custom-columns=:.metadata.name -n $LOKI_NAMESPACE)
-echo $LOKI_CRON_JOB_NAME
+# Create Service Account
+kubectl create serviceaccount $SERVICE_ACCOUNT_NAME
 
-# Get the loki job name
-echo "-- Get the loki Cron Job name"
-export LOKI_JOB_NAME=$(kubectl get jobs -o custom-columns=:.metadata.name -n $LOKI_NAMESPACE)
-echo $LOKI_JOB_NAME
+###---
+cat << EOF > trust.json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::${ACCOUNT_ID}:oidc-provider/${OIDC_PROVIDER}"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "${OIDC_PROVIDER}:aud": "sts.amazonaws.com",
+          "${OIDC_PROVIDER}:sub": "system:serviceaccount:${LOKI_NAMESPACE}:${SERVICE_ACCOUNT_NAME}"
+        }
+      }
+    }
+  ]
+}
+EOF
 
-# Running latest job before upgrade
-kubectl create job --from=cronjob/$(echo $LOKI_CRON_JOB_NAME) $JOB_LATEST_MANUAL
-# Waiting for complete
-kubectl wait --for=condition=complete --timeout=10m job/$JOB_LATEST_MANUAL
-sleep 5s
-echo "-- Latest data is copied to S3!"
+ROLE_ARN=$(aws iam create-role --role-name ${ROLE_NAME} \
+	    --assume-role-policy-document file://trust.json)
 
+kubectl annotate serviceaccount -n ${LOKI_NAMESPACE} \
+	    ${SERVICE_ACCOUNT_NAME} \
+	        eks.amazonaws.com/role-arn=$(echo $ROLE_ARN | jq -r '.Role.Arn')
+echo "-- Service Account and role were created"
+
+###---
+cat << EOF > policy.json
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Sid": "Statement",
+            "Effect": "Allow",
+            "Action": [
+                "s3:ListBucket",
+                "s3:GetObject",
+                "s3:DeleteObject",
+                "s3:PutObject"
+            ],
+            "Resource": [
+                "arn:aws:s3:::${BUCKET_NAME}/*",
+                "arn:aws:s3:::${BUCKET_NAME}"
+            ]
+        }
+    ]
+}
+EOF
+POLICY_ARN=$(aws iam create-policy --policy-name ${POLICY_NAME} --policy-document file://policy.json)
+aws iam attach-role-policy --policy-arn $(echo $POLICY_ARN | jq -r '.Policy.Arn') --role-name ${ROLE_NAME}
+
+echo "-- Policy to access S3 bucket was attached to role $ROLE_NAME --"
 
 # Prepare the new values
-helm get values loki | tee $LOKI_VALUES
-cp $LOKI_VALUES "$LOKI_VALUES.bak"
 cat << EOF > $LOKI_VALUES
 config:
   auth_enabled: false
@@ -82,21 +123,8 @@ serviceAccount:
   create: false
   name: $SERVICE_ACCOUNT_NAME
   annotations: {}
-securityContext:
-  fsGroupChangePolicy: "OnRootMismatch"
 EOF
 
-# Delete container and uninstall loki
-# helm uninstall loki
-export LOKI_STATEFULSET=$(kubectl get statefulset -n loki | awk '{print $1}' | grep loki)
-kubectl delete statefulsets $LOKI_STATEFULSET
-# Delete all jobs and cronjob
-kubectl delete cronjob $LOKI_CRON_JOB_NAME
-for j in $LOKI_JOB_NAME
-do
-    kubectl delete jobs $j &
-done
-kubectl wait pods --for=delete loki-0 --timeout=80s
 
 echo "-- Upgrade the helm: $LOKI_VERSION"
 helm repo add loki https://grafana.github.io/helm-charts
