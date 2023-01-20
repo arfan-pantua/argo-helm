@@ -10,6 +10,11 @@ export DB_USER=...
 export DB_PASS=...
 export DB_NAME=...
 
+
+export VOL_BACKUP_ID=...
+export REGION_VOL_BACKUP=...
+export VOL_BACKUP_STORAGE_SIZE=... #Gi
+
 export GF_NAMESPACE=... # or 'default'
 export GF_RELEASE_NAME=...
 
@@ -38,11 +43,60 @@ export GF_CREATE_DB_JOB_MANIFEST=create-db-job.yaml
 export GF_CREATE_DB_JOB=create-db-job
 export GF_MIGRATE_DB_JOB_MANIFEST=migrate-db-job.yaml
 export GF_MIGRATE_DB_JOB=migrate-db-job
+export GF_PVC_BACKUP_VALUE=backup-pvc.yaml
 
 
 # Set namespace
 echo "-- Set the kubectl context to use the GF_NAMESPACE: $GF_NAMESPACE"
 kubectl config set-context --current --namespace=$GF_NAMESPACE
+
+# Documentation for backup
+
+## Take previous version
+helm list | grep grafana | awk '{print "GF_CHART_VERSION="$9}' >> grafana.version.bak
+helm list | grep grafana | awk '{print "GF_APP_VERSION="$10}' >> grafana.version.bak
+
+## Take Grafana value
+
+helm get values grafana | tee $GF_VALUES
+cp $GF_VALUES "$GF_VALUES.bak"
+
+## Backup pvc
+
+cat << EOF > $GF_PVC_BACKUP_VALUE
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-gf-backup
+spec:
+  accessModes:
+  - ReadWriteOnce
+  awsElasticBlockStore:
+    fsType: ext4
+    volumeID: aws://$REGION_VOL_BACKUP/$VOL_BACKUP_ID
+  capacity:
+    storage: $VOL_BACKUP_STORAGE_SIZE
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: encrypted-gp2
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-gf-backup
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: $VOL_BACKUP_STORAGE_SIZE
+  storageClassName: encrypted-gp2
+  volumeMode: Filesystem
+  volumeName: pv-gf-backup
+EOF
+
+kubectl apply -f $GF_PVC_BACKUP_VALUE
 
 # Scale the grafana to 0
 echo "-- Scale Grafana's Deployment to 0"
@@ -70,7 +124,8 @@ spec:
         imagePullPolicy: Always
         command: ["/bin/sh"]
         args: ["-c", "export PGPASSWORD=$DB_PASS;psql --host=$DB_HOST --port=$DB_PORT -U $DB_USER --dbname=postgres -c 'drop database $DB_NAME';
-        psql --host=$DB_HOST --port=$DB_PORT -U $DB_USER --dbname=postgres -c 'create database $DB_NAME'"]
+        psql --host=$DB_HOST --port=$DB_PORT -U $DB_USER --dbname=postgres -c 'create database $DB_NAME';
+        psql --host=$DB_HOST --port=$DB_PORT -U $DB_USER --dbname=$DB_NAME -c 'create table if not exists public.alter()';"]
       restartPolicy: Never
 EOF
 if [[ $DEDICATED_NODE = true ]]
@@ -90,8 +145,7 @@ kubectl wait --for=condition=complete --timeout=10m job/$GF_CREATE_DB_JOB
 
 echo "-- Database is created!"
 # Prepare the new values
-helm get values grafana | tee $GF_VALUES
-cp $GF_VALUES "$GF_VALUES.bak"
+
 cat << EOF >> $GF_VALUES
 
 env:
@@ -192,8 +246,6 @@ helm upgrade --version $GF_VERSION grafana grafana/grafana --values $GF_VALUES -
 
 echo "-- Waiting to available..."
 kubectl wait pods -l app.kubernetes.io/instance=$GF_RELEASE_NAME --for condition=Ready --timeout=3m
-
-# rm $GF_VALUES *.bak
 
 # Get the prometheus job name
 echo "-- Get the prometheus Cron Job name"
