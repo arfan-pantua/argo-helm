@@ -7,10 +7,17 @@ set -e -x
 export SERVICE_ACCOUNT_NAME=... #by default it was prometheus-server dont use this name
 export BUCKET_NAME=...
 export REGION_S3=...
-export EXISTING_PVC_ALERTMANAGER=...
 export JOB_LATEST_MANUAL=...
 export NEW_STORAGE_SIZE=...
 export CLUSTER_NAME=...
+
+export VOL_BACKUP_ID=...
+export REGION_VOL_BACKUP=...
+export VOL_BACKUP_STORAGE_SIZE=... #Gi
+
+export VOL_BACKUP_ID_ALERTMANAGER=...
+export REGION_VOL_BACKUP_ALERTMANAGER=...
+export VOL_BACKUP_STORAGE_SIZE_ALERTMANAGER=... #Gi
 
 #!!! Just ignore when loki doesnt need to run in dedicated Node, but fill the values if the pod need to run in dedicated node !!!
 export DEDICATED_NODE=false # change to be "true" when loki need to run in dedicated node
@@ -29,11 +36,15 @@ export THANOS_VERSION=11.6.8
 #--------------------------------------------------------------------------------------
 
 # Env Definition
+export BACKUP_PVC_ALERTMANAGER=pvc-prom-alert-backup
 export PROM_VALUES=prometheus.values.yaml
 export PROM_NAMESPACE=prometheus # or 'default'
 export PROM_RELEASE_NAME=prometheus
+export PROM_PVC_BACKUP_VALUE=backup-pvc.yaml
+export PROM_PVC_BACKUP_ALERTMANAGER_VALUE=backup-pvc-alertmanager.yaml
 export THANOS_CONF_FILE=thanos-storage-config.yaml
 export THANOS_VALUES=thanos.values.yaml
+
 ## !!! Fill this !!!
 
 
@@ -41,7 +52,84 @@ export THANOS_VALUES=thanos.values.yaml
 echo "-- Set the kubectl context to use the PROM_NAMESPACE: $PROM_NAMESPACE"
 kubectl config set-context --current --namespace=$PROM_NAMESPACE
 
+# Documentation for backup
 
+## Take previous version
+helm list | grep prometheus | awk '{print "PROM_CHART_VERSION="$9}' >> prometheus.version.bak
+helm list | grep prometheus | awk '{print "PROM_APP_VERSION="$10}' >> prometheus.version.bak
+
+## Take prometheus helm values
+helm get values prometheus | tee $PROM_VALUES
+cp $PROM_VALUES "$PROM_VALUES.bak"
+
+## Backup pvc
+
+cat << EOF > $PROM_PVC_BACKUP_VALUE
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-prom-backup
+spec:
+  accessModes:
+  - ReadWriteOnce
+  awsElasticBlockStore:
+    fsType: ext4
+    volumeID: aws://$REGION_VOL_BACKUP/$VOL_BACKUP_ID
+  capacity:
+    storage: $VOL_BACKUP_STORAGE_SIZE
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: encrypted-gp2
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: pvc-prom-backup
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: $VOL_BACKUP_STORAGE_SIZE
+  storageClassName: encrypted-gp2
+  volumeMode: Filesystem
+  volumeName: pv-prom-backup
+EOF
+kubectl apply -f $PROM_PVC_BACKUP_VALUE
+cat << EOF > $PROM_PVC_BACKUP_ALERTMANAGER_VALUE
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-prom-alert-backup
+spec:
+  accessModes:
+  - ReadWriteOnce
+  awsElasticBlockStore:
+    fsType: ext4
+    volumeID: aws://$REGION_VOL_BACKUP_ALERTMANAGER/$VOL_BACKUP_ID_ALERTMANAGER
+  capacity:
+    storage: $VOL_BACKUP_STORAGE_SIZE_ALERTMANAGER
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: encrypted-gp2
+  volumeMode: Filesystem
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: $BACKUP_PVC_ALERTMANAGER
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: $VOL_BACKUP_STORAGE_SIZE_ALERTMANAGER
+  storageClassName: encrypted-gp2
+  volumeMode: Filesystem
+  volumeName: pv-prom-alert-backup
+EOF
+kubectl apply -f $PROM_PVC_BACKUP_ALERTMANAGER_VALUE
 # Scale the prometheus to 0
 echo "-- Scale Prometheus's Deployment to 0"
 kubectl scale deploy/prometheus-server --replicas=0
@@ -49,8 +137,7 @@ kubectl scale deploy/prometheus-alertmanager --replicas=0
 sleep 10s
 
 # Prepare sidecar
-helm get values prometheus | tee $PROM_VALUES
-cp $PROM_VALUES "$PROM_VALUES.bak"
+
 cat << EOF >> $PROM_VALUES
   extraArgs:
     storage.tsdb.max-block-duration: 3m
@@ -60,8 +147,10 @@ kubectl delete deployment prometheus-kube-state-metrics
 echo "-- Upgrade the helm: $PROM_VERSION"
 helm repo add prometheus https://prometheus-community.github.io/helm-charts
 helm repo update
-helm upgrade --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES
+helm upgrade --version $PROM_VERSION prometheus prometheus/prometheus --values $PROM_VALUES --set alertmanager.replicaCount=1 --set server.replicaCount=1
 kubectl wait pods -l release=$PROM_RELEASE_NAME --for condition=Ready --timeout=5m
+
+echo "-- Please wait..."
 # waiting about 3 minutes
 for j in {1..10}
 do
@@ -103,7 +192,7 @@ serviceAccounts:
 alertmanager:
   persistentVolume:
     enabled: true
-    existingClaim: $EXISTING_PVC_ALERTMANAGER
+    existingClaim: $BACKUP_PVC_ALERTMANAGER
 server:
   replicaCount: 2
   # Keep the metrics for 3 months
