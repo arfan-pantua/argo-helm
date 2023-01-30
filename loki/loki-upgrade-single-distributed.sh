@@ -22,6 +22,15 @@ export distributor_replicas=...
 export querier_replicas=...
 export queryFrontend_replicas=...
 
+export ingester_memory_limit=... #Mi or Gi
+export ingester_cpu_limit=...
+export distributor_memory_limit=...
+export distributor_cpu_limit=...
+export querier_memory_limit=...
+export querier_cpu_limit=...
+export queryFrontend_memory_limit=...
+export queryFrontend_cpu_limit=...
+
 # Set to the specific version
 export LOKI_VERSION=0.67.2
 #--------------------------------------------------------------------------------------
@@ -97,8 +106,8 @@ ingester:
           topologyKey: kubernetes.io/hostname
   resources:
     limits:
-      cpu: 0.2
-      memory: 250Mi
+      cpu: $ingester_cpu_limit
+      memory: $ingester_memory_limit
 # Configuration for the querier
 querier:
   replicas: $querier_replicas
@@ -122,8 +131,8 @@ querier:
           topologyKey: kubernetes.io/hostname
   resources:
     limits:
-      cpu: 0.25
-      memory: 750Mi
+      cpu: $querier_cpu_limit
+      memory: $querier_memory_limit
 # Configuration for the querie front end
 queryFrontend:
   replicas: $queryFrontend_replicas
@@ -134,10 +143,11 @@ queryFrontend:
     minReplicas: 1
     # -- Maximum autoscaling replicas for the distributor
     maxReplicas: 3
+  maxUnavailable: 2
   resources:
     limits:
-      cpu: 0.1
-      memory: 100Mi
+      cpu: $queryFrontend_cpu_limit
+      memory: $queryFrontend_memory_limit
 distributor:
   replicas: $distributor_replicas
   maxUnavailable: 2
@@ -153,8 +163,8 @@ distributor:
           topologyKey: kubernetes.io/hostname
   resources:
     limits:
-      cpu: 0.2
-      memory: 500Mi
+      cpu: $distributor_cpu_limit
+      memory: $distributor_memory_limit
 securityContext:
   runAsNonRoot: false
   runAsUser: 0
