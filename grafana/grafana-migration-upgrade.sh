@@ -11,10 +11,6 @@ export DB_PASS=...
 export DB_NAME=...
 
 
-export VOL_BACKUP_ID=...
-export REGION_VOL_BACKUP=...
-export VOL_BACKUP_STORAGE_SIZE=... #Gi
-
 export GF_NAMESPACE=... # or 'default'
 export GF_RELEASE_NAME=...
 
@@ -61,52 +57,67 @@ helm list | grep grafana | awk '{print "GF_APP_VERSION="$10}' >> grafana.version
 helm get values grafana | tee $GF_VALUES
 cp $GF_VALUES "$GF_VALUES.bak"
 
+# Get the grafana PVC name
+echo "-- Get the grafana PVC name"
+export GF_PVC=$(kubectl get pvc -n $GF_NAMESPACE | awk '{print $1}' | grep grafana)
+echo $GF_PVC
+
+# Get the grafana PV name
+echo "-- Get the grafana PV name"
+export GF_PV=$(kubectl get pvc -n $GF_NAMESPACE | grep grafana | awk '{print $3}')
+echo $GF_PV
+
+# Get and set volume id
+export VOLUME_ID=$(kubectl get pv -n $GF_NAMESPACE -o json | jq -j '.items[] | "\(.spec.awsElasticBlockStore.volumeID) \(.metadata.name)\n"' | grep $GF_PV | awk -F/ '{print $4}' | awk '{print $1}')
+export REGION_VOL_BACKUP=$(kubectl get pv -n $GF_NAMESPACE -o json | jq -j '.items[] | "\(.spec.awsElasticBlockStore.volumeID) \(.metadata.name)\n"' | grep $GF_PV | awk -F/ '{print $3}' | awk '{print $1}')
+aws ec2 create-snapshot --volume-id $VOLUME_ID
+
+# export SNAPSHOT_ID=$(aws ec2 describe-snapshots --filters Name=volume-id,Values=$VOLUME_ID --query "Snapshots[*].[SnapshotId]" --output text)
+
+# aws ec2 create-volume --snapshot-id $SNAPSHOT_ID --availability-zone $REGION_VOL_BACKUP
+
+# export VOL_BACKUP_ID=$(aws ec2 describe-snapshots --filters Name=snapshot-id,Values=$SNAPSHOT_ID --query "Snapshots[*].[VolumeId]" --output text)
+
+# read -p "Please check volume id $VOL_BACKUP_ID in AWS console then Press ENTER to continue, or Ctrl+C to stop..." tmp
+
 ## Backup pvc
 
-cat << EOF > $GF_PVC_BACKUP_VALUE
----
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: pv-gf-backup
-spec:
-  accessModes:
-  - ReadWriteOnce
-  awsElasticBlockStore:
-    fsType: ext4
-    volumeID: aws://$REGION_VOL_BACKUP/$VOL_BACKUP_ID
-  capacity:
-    storage: $VOL_BACKUP_STORAGE_SIZE
-  persistentVolumeReclaimPolicy: Retain
-  storageClassName: encrypted-gp2
-  volumeMode: Filesystem
----
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: pvc-gf-backup
-spec:
-  accessModes:
-  - ReadWriteOnce
-  resources:
-    requests:
-      storage: $VOL_BACKUP_STORAGE_SIZE
-  storageClassName: encrypted-gp2
-  volumeMode: Filesystem
-  volumeName: pv-gf-backup
-EOF
+# cat << EOF > $GF_PVC_BACKUP_VALUE
+# ---
+# apiVersion: v1
+# kind: PersistentVolume
+# metadata:
+#   name: pv-gf-backup
+# spec:
+#   accessModes:
+#   - ReadWriteOnce
+#   awsElasticBlockStore:
+#     fsType: ext4
+#     volumeID: aws://$REGION_VOL_BACKUP/$VOL_BACKUP_ID
+#   persistentVolumeReclaimPolicy: Retain
+#   storageClassName: encrypted-gp2
+#   volumeMode: Filesystem
+# ---
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: pvc-gf-backup
+# spec:
+#   accessModes:
+#   - ReadWriteOnce
+#   storageClassName: encrypted-gp2
+#   volumeMode: Filesystem
+#   volumeName: pv-gf-backup
+# EOF
 
-kubectl apply -f $GF_PVC_BACKUP_VALUE
-
+# kubectl apply -f $GF_PVC_BACKUP_VALUE
+# sleep 10s
 # Scale the grafana to 0
 echo "-- Scale Grafana's Deployment to 0"
 kubectl scale deploy/grafana --replicas=0
 sleep 5s
 
-# Get the grafana PVC name
-echo "-- Get the grafana PVC name"
-export GF_PVC=$(kubectl get pvc -n $GF_NAMESPACE | awk '{print $1}' | grep grafana)
-echo $GF_PVC
+
 
 echo "-- Create database job"
 # Prepare Job
@@ -239,8 +250,6 @@ echo "Rollback force migration to false"
 
 echo "Change force migration value"
 
-sed -i  "s|force_migration: true *|force_migration: false |" $GF_VALUES
-
 echo "release pvc in grafana"
 helm upgrade --version $GF_VERSION grafana grafana/grafana --values $GF_VALUES --set persistence.enabled=false --set replicas=3
 
@@ -257,3 +266,7 @@ for j in $GF_JOB_NAME
 do
     kubectl delete jobs $j &
 done
+
+sed -i  "s|force_migration: true *|force_migration: false |" $GF_VALUES
+echo "Restart grafana to rollbacl force migration status"
+helm upgrade --version $GF_VERSION grafana grafana/grafana --values $GF_VALUES --set persistence.enabled=false --set replicas=3
