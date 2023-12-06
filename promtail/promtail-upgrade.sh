@@ -9,6 +9,8 @@ export PROMTAIL_NAMESPACE=...
 export PROMTAIL_RELEASE_NAME=...
 
 export LOKI_NAMESPACE=...
+
+export LOKI_RELEASE_NAME=...
 #--------------------------------------------------------------------------------------
 # Set to the specific version
 export VERSION=2.1.0
@@ -22,7 +24,7 @@ helm get values promtail | tee $PROMTAIL_VALUES
 cp $PROMTAIL_VALUES "$PROMTAIL_VALUES.bak"
 cat << EOF >> $PROMTAIL_VALUES
 loki:
-  serviceName: loki.$LOKI_NAMESPACE
+  serviceName: $LOKI_RELEASE_NAME.$LOKI_NAMESPACE
 config:
   client:
     # Maximum wait period before sending batch
