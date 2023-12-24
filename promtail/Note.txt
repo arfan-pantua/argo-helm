@@ -1,8 +1,0 @@
-In Promtail config we will try to pending send data from promtail to loki when loki is unavailable
-- Make batch wait 10 multiples more than default 1s. This means Promtail will send data every 10s instead of 1s
-- Make batch size 10 multiples more than default size 10240 byte.
-- When the param above, batch wait and batch size, is reached promtail will send using parameter value at backoff_config
-- retries 10 looping, every trying has max period 5 minutes. Its mean the peak of period is 50 minutes
-
-
-https://grafana.com/docs/loki/latest/clients/promtail/troubleshooting/
