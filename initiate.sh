@@ -111,7 +111,7 @@ spec:
       finalizers:
       - resources-finalizer.argocd.argoproj.io
     spec:
-      project: my-project
+      project: default
       destination:
         name: in-cluster
         namespace: '{{.namespace}}'
