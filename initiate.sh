@@ -88,6 +88,46 @@ EOF
 POLICY_ARN=$(aws iam create-policy --policy-name ${POLICY_NAME} --policy-document file://policy.json)
 aws iam attach-role-policy --policy-arn $(echo $POLICY_ARN | jq -r '.Policy.Arn') --role-name ${ROLE_NAME}
 
+# Application set for generator
+cat << EOF > applicationset.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: agx-prod-charts
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+  - git:
+      repoURL: https://github.com/arfan-pantua/argo-helm.git
+      revision: main
+      files:
+      - path: charts/**/config.json
+  template:
+    metadata:
+      name: '{{.name}}-chart'
+      namespace: argocd
+      finalizers:
+      - resources-finalizer.argocd.argoproj.io
+    spec:
+      project: my-project
+      destination:
+        name: in-cluster
+        namespace: '{{.namespace}}'
+      source:
+        repoURL: https://github.com/arfan-pantua/argo-helm.git
+        targetRevision: main
+        path: '{{.path.path}}'
+        plugin:
+          name: argocd-vault-plugin-helm
+          env:
+          - name: releaseName
+            value: '{{.name}}'
+          - name: helmArgs
+            value: '-f values.yaml'
+EOF
+kubectl apply -f applicationset.yaml
 # Prepare the new values
 cat << EOF > $ARGO_VALUES
 configs:
