@@ -1,0 +1,10 @@
+grafana:
+  env:
+    GF_DATABASE_HOST: <database-host>
+    GF_DATABASE_NAME: grafana
+    GF_DATABASE_TYPE: postgres
+    GF_DATABASE_USER: arfan
+    GF_DATABASE_PASSWORD: <path:arn:aws:secretsmanager:ap-southeast-1:<account_id>:secret:/vault-test/demo-xxx123#db_password>
+  image:
+    repository: grafana/grafana
+    tag: 10.4.0

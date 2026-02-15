@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: vault-plugin-test
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: vault-plugin-test
+  template:
+    metadata:
+      labels:
+        app: vault-plugin-test
+    spec:
+      containers:
+      - name: busybox
+        image: busybox:latest
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Checking secrets..."
+            echo "The database password is: $MY_DB_PASSWORD"
+            echo "The API Key is: $MY_API_KEY"
+            sleep 3600
+        env:
+          - name: MY_DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: vault-plugin-test-secrets
+                key: DATABASE_PASSWORD
+          - name: MY_API_KEY
+            valueFrom:
+              secretKeyRef:
+                name: vault-plugin-test-secrets
+                key: API_KEY
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: vault-plugin-test-secrets
+  namespace: default
+type: Opaque
+stringData:
+  DATABASE_PASSWORD: "<path:arn:aws:secretsmanager:ap-southeast-1:<account_id>:secret:/vault-test/demo-xxx123#db_password>"
+  API_KEY: "<path:arn:aws:secretsmanager:ap-southeast-1:<account_id>:secret:/vault-test/demo-xxx123#api_key>"

@@ -12,15 +12,20 @@ export POLICY_NAME=...
 export RELEASE_NAME=...
 export ARGO_NAMESPACE=...
 # Set to the specific version
-export ARGO_VERSION=5.9.0
+export ARGO_VERSION=7.9.1
 
 # AVP Plugin
 export AWS_REGION=...
 
+$ RBAC
+export QA_GROUP_ID=...
+export DEV_GROUP_ID=...
+export ADMIN_GROUP_ID=...
+
 # IAM SSO
 export DOMAIN_NAME=...
-export SSO_URL=...
-export CA_DATA=...
+export SSO_URL=... # IAM Identity Center sign-in URL
+export CA_DATA=... # IAM Identity Center Certificate BASE64 ENCODED STRING
 
 # Env Definition
 export ARGO_VALUES=argo.values.yaml
@@ -56,11 +61,11 @@ cat << EOF > trust.json
 EOF
 
 ROLE_ARN=$(aws iam create-role --role-name ${ROLE_NAME} \
-	    --assume-role-policy-document file://trust.json)
+     --assume-role-policy-document file://trust.json)
 
 kubectl annotate serviceaccount -n ${ARGO_NAMESPACE} \
-	    ${SERVICE_ACCOUNT_NAME} \
-	        eks.amazonaws.com/role-arn=$(echo $ROLE_ARN | jq -r '.Role.Arn')
+     ${SERVICE_ACCOUNT_NAME} \
+         eks.amazonaws.com/role-arn=$(echo $ROLE_ARN | jq -r '.Role.Arn')
 echo "-- Service Account and role were created"
 
 # ###---
@@ -83,114 +88,107 @@ EOF
 POLICY_ARN=$(aws iam create-policy --policy-name ${POLICY_NAME} --policy-document file://policy.json)
 aws iam attach-role-policy --policy-arn $(echo $POLICY_ARN | jq -r '.Policy.Arn') --role-name ${ROLE_NAME}
 
-
-# Prepare configmap plugin
-cat << EOF > $ARGO_CONFIGMAP_PLUGIN
-apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: cmp-plugin
-data:
-  avp-kustomize.yaml: |
-    ---
-    apiVersion: argoproj.io/v1alpha1
-    kind: ConfigManagementPlugin
-    metadata:
-      name: argocd-vault-plugin-kustomize
-    spec:
-      allowConcurrency: true
-
-      # Note: this command is run _before_ anything is done, therefore the logic is to check
-      # if this looks like a Kustomize bundle
-      discover:
-        find:
-          command:
-            - find
-            - "."
-            - -name
-            - kustomization.yaml
-      generate:
-        command:
-          - sh
-          - "-c"
-          - "kustomize build . | argocd-vault-plugin generate -"
-      lockRepo: false
-
-  avp.yaml: |
-    apiVersion: argoproj.io/v1alpha1
-    kind: ConfigManagementPlugin
-    metadata:
-      name: argocd-vault-plugin
-    spec:
-      allowConcurrency: true
-      discover:
-        find:
-          command:
-          - sh
-          - -c
-          - find . -name '*.yaml' | xargs -I {} grep "<path\|avp\.kubernetes\.io" {} | grep
-            .
-      generate:
-        command:
-        - argocd-vault-plugin
-        - generate
-        - --verbose-sensitive-output
-        - .
-      lockRepo: false
-EOF
-
-kubectl apply -f $ARGO_CONFIGMAP_PLUGIN
 # Prepare the new values
 cat << EOF > $ARGO_VALUES
 configs:
-  params:
-    server.insecure: true
-  cm:
-    # -- Create the argocd-cm configmap for [declarative setup]
+  cmp:
     create: true
-    admin.enabled: 'false'
+    plugins:
+      argocd-vault-plugin:
+        discover:
+          find:
+            command:
+            - sh
+            - -c
+            - "find . -name '*.yaml' -o -name '*.yml'"
+        generate:
+          command:
+          - argocd-vault-plugin
+          - generate
+          - --verbose-sensitive-output
+          - .
+      argocd-vault-plugin-helm:
+        allowConcurrency: true
+        discover:
+          find:
+            command:
+            - sh
+            - -c
+            - find . -name 'Chart.yaml' && find . -name 'values.yaml'
+        generate:
+          command:
+          - sh
+          - -c
+          - "argocd-vault-plugin generate all.yaml"
+        init:
+          command:
+          - sh
+          - -c
+          - "helm dependency build --debug && helm template $ARGOCD_ENV_releaseName --debug --include-crds -n $ARGOCD_APP_NAMESPACE ${ARGOCD_ENV_helmArgs} . > all.yaml"
 
-    # -- Argo CD's externally facing base URL (optional). Required when configuring SSO
-    url: "https://$DOMAIN_NAME"
-
-    dex.config: |  
+  cm:
+    admin.enabled: "false"
+    application.instanceLabelKey: argocd.argoproj.io/instance
+    create: true
+    dex.config: |
       logger:
         level: debug
         format: json
       connectors:
       - type: saml
         id: aws
-        name: "AWS SSO"
+        name: "AWS"
         config:
-          ssoURL: https://portal.sso.ap-southeast-1.amazonaws.com/saml/assertion/OTQ0MTMxMDI5MDE0X2lucy01ZmM2MmU3NTM0NmZjZWI4
+          ssoURL: $SSO_URL
+          entityIssuer: https://argo.hydrax.io/api/dex/callback
           caData: |
-            LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0tCk1JSURCakNDQWU2Z0F3SUJBZ0lFRDg2RVdUQU5CZ2txaGtpRzl3MEJBUXNGQURCRk1SWXdGQVlEVlFRRERBMWgKYldGNmIyNWhkM011WTI5dE1RMHdDd1lEVlFRTERBUkpSRUZUTVE4d0RRWURWUVFLREFaQmJXRjZiMjR4Q3pBSgpCZ05WQkFZVEFsVlRNQjRYRFRJek1USXhOakExTURjeU1Gb1hEVEk0TVRJeE5qQTFNRGN5TUZvd1JURVdNQlFHCkExVUVBd3dOWVcxaGVtOXVZWGR6TG1OdmJURU5NQXNHQTFVRUN3d0VTVVJCVXpFUE1BMEdBMVVFQ2d3R1FXMWgKZW05dU1Rc3dDUVlEVlFRR0V3SlZVekNDQVNJd0RRWUpLb1pJaHZjTkFRRUJCUUFEZ2dFUEFEQ0NBUW9DZ2dFQgpBTHdHSlVmRWtNSVlQQWRDQ0R3ZWFyWEYzMi9qZmRKdkZ3OXVMS2l3Z0lESUZLYkRzaGhvUDRqTEQwWllIUElVCjZ4L2x2KzV5UTdBMWF4VGU5WTVnK3hjcTNTT0p1bzl3dzRkb0k0eml3UUxTNDZ2Wm9jTlVRanNSK0hUOW5EQjgKK0VJb3paeSt6VTBKclJPUTVYazlTUWJVdnZqb0F5RGtmcTd4UjdZSDIyeENwVmR4UWNna1Awako0UFRsSmJ4TwpIUEdUZ1hxdGpBRW9jQVhnNEh6Q2VPWjVNRWtsNHpValJDUG10N0t3dHFNQWtsR3AzeWNFeWh5aTlDUll4elhrClg0cFkyZlBHZEFIOFBEZG9zZXNyTG8wT0dNd3cyL094QjZBYXNEck1XWWJqMVZ1Wnhha2NHUWp3TDV2d0hwOGMKRDZqRkQ1YmRvT2JsTTJ5L2M0a1BhTFVDQXdFQUFUQU5CZ2txaGtpRzl3MEJBUXNGQUFPQ0FRRUFSVWpDWTVCRAprREU1eXNkSCtJSTNSK1RKZGhQUkRkRXRZMXBwUmg0OGRWT3RqOG1EQkVhbjRmdElhOTBUdnpCdWJCS0plM3AvCklrb0c1QTB6dzZiQTVkaG5STzE0bXlzZFVUUktnaVZ5RTh2c2swWnFlMTZrcFd1dFFxQ2FmemhXaWsxa0dBZ1gKMzA0djFhUFBtWmI4Y0NiQURWa3FhNUJhY2o2OC9HRTdtRmFvR3pFREhrd3JJcVcxVmNBb2RVK0lCUUtPcFgxSgo5WVNESUZZNGlsdzZVQzdlNFpLaEd2WTFvMzFuOTZtRnVoaUE4RkFLRmhUdUkrK1BOb1B5ZFIwa1pSNVhRNk8yCnk4eUQvbHg1L1hQZkp3MVhKVjFmNkthVC95bWZiR1dEQ0tTTHNKRGREMHhUTk1SK0lJampiUEpNLytJT1JwT1MKNWZIL2VuSk4yejJEcEE9PQotLS0tLUVORCBDRVJUSUZJQ0FURS0tLS0t
-          redirectURI: https://$DOMAIN_NAME/api/dex/callback
-          entityIssuer: https://$DOMAIN_NAME/api/dex/callback
+            $CA_DATA
+          redirectURI: https://argo.hydrax.io/api/dex/callback
           usernameAttr: email
           emailAttr: email
           groupsAttr: groups
+    exec.enabled: "false"
+    server.rbac.log.enforce.enable: "false"
+    timeout.hard.reconciliation: 0s
+    timeout.reconciliation: 180s
+    url: https://argo.hydrax.io
+  params:
+    server.insecure: true
+  rbac:
+    create: true
+    policy.csv: |
+      p, role:admin, applications, *, */*, allow
+      p, role:admin, clusters, *, *, allow
+      p, role:admin, repositories, *, *, allow
+      p, role:admin, projects, *, *, allow
+      p, role:read-write, applications, *, */*, allow
+      p, role:read-only, applications, get, */*, allow
+      p, role:read-only, applications, sync, */*, allow
+      g, b91a258c-1001-7092-a418-3dce8f0e8d37, role:read-only
+      g, 96671cc538-b98d9762-e32c-4331-a123-6fd318aebec0, role:read-only
+      g, a91a95ec-e011-707f-c839-777b9b67e565, role:read-write
+      g, 96671cc538-cb7506d2-88fe-41e4-8562-4af30cd8e1a9, role:read-write
+      g, 96671cc538-e17eebb3-56e3-4dd2-b017-e7704c5276e6, role:read-write
+      g, b9aa85fc-2001-703e-1a3c-3e59a30c2945, role:admin
+    policy.default: role:read-only
+    scopes: '[groups, email]'
 crds:
   install: true
-server:
-  service:
-    type: NodePort
-  serviceAccount:
-    create: false
-    name: $SERVICE_ACCOUNT_NAME
+redis:
+  enabled: true
 repoServer:
-  # automountServiceAccountToken: true
+  replicas: 2
   extraContainers:
   - command:
     - /var/run/argocd/argocd-cmp-server
-    image: quay.io/argoproj/argocd:v2.7.9
     env:
     - name: AVP_TYPE
       value: awssecretsmanager
     - name: AVP_AUTH_TYPE
       value: k8s
     - name: AWS_REGION
-      value: $AWS_REGION
+      value: ap-southeast-1
+    image: quay.io/argoproj/argocd:v2.14.8
     name: avp
     securityContext:
       runAsNonRoot: true
@@ -201,40 +199,79 @@ repoServer:
     - mountPath: /home/argocd/cmp-server/plugins
       name: plugins
     - mountPath: /tmp
-      name: tmp
+      name: cmp-tmp
     - mountPath: /home/argocd/cmp-server/config/plugin.yaml
       name: cmp-plugin
-      subPath: avp.yaml
+      subPath: argocd-vault-plugin.yaml
+    - mountPath: /usr/local/bin/argocd-vault-plugin
+      name: custom-tools
+      subPath: argocd-vault-plugin
+  - command:
+    - /var/run/argocd/argocd-cmp-server
+    env:
+    - name: AVP_TYPE
+      value: awssecretsmanager
+    - name: AVP_AUTH_TYPE
+      value: k8s
+    - name: AWS_REGION
+      value: ap-southeast-1
+    image: quay.io/argoproj/argocd:v2.14.8
+    name: avp-helm
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 999
+    volumeMounts:
+    - mountPath: /var/run/argocd
+      name: var-files
+    - mountPath: /home/argocd/cmp-server/plugins
+      name: plugins
+    - mountPath: /tmp
+      name: cmp-tmp
+    - mountPath: /home/argocd/cmp-server/config/plugin.yaml
+      name: cmp-plugin
+      subPath: argocd-vault-plugin-helm.yaml
     - mountPath: /usr/local/bin/argocd-vault-plugin
       name: custom-tools
       subPath: argocd-vault-plugin
   initContainers:
   - args:
-    - wget -O argocd-vault-plugin https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v1.16.1/argocd-vault-plugin_1.16.1_linux_amd64
+    - wget -O argocd-vault-plugin https://github.com/argoproj-labs/argocd-vault-plugin/releases/download/v1.18.1/argocd-vault-plugin_1.18.1_linux_amd64
       && chmod +x argocd-vault-plugin && mv argocd-vault-plugin /custom-tools/
     command:
     - sh
     - -c
     env:
     - name: AVP_VERSION
-      value: 1.16.1
-    image: alpine:3.8
+      value: 1.18.1
+    image: alpine:3.21
     name: download-tools
     volumeMounts:
     - mountPath: /custom-tools
       name: custom-tools
+  nodeSelector:
+    dedicated: monitoring
   serviceAccount:
     create: false
     name: argocd-sa
   volumes:
   - configMap:
-      name: cmp-plugin
+      name: argocd-cmp-cm
     name: cmp-plugin
   - emptyDir: {}
     name: custom-tools
+  - emptyDir: {}
+    name: cmp-tmp
+server:
+  serviceAccount:
+    create: false
+    name: argocd-sa
+controller:
+  serviceAccount:
+    create: false
+    name: argocd-sa
 EOF
 
-
 echo "-- Upgrade the helm: $ARGO_VERSION"
+helm repo add argo https://argoproj.github.io/argo-helm
 helm repo update
 helm upgrade --install --version $ARGO_VERSION $RELEASE_NAME argo/argo-cd --values $ARGO_VALUES
