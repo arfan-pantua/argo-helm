@@ -93,7 +93,7 @@ cat << EOF > applicationset.yaml
 apiVersion: argoproj.io/v1alpha1
 kind: ApplicationSet
 metadata:
-  name: agx-prod-charts
+  name: my-charts
   namespace: argocd
 spec:
   goTemplate: true
